@@ -22,6 +22,13 @@ class ExcelParseResult:
     item_dimensions: list[dict] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ExcelDataLayout:
+    data_row_start: int
+    data_cols: list[int]
+    header_row_start: int
+
+
 def _col_letter(col_idx: int) -> str:
     """0-based 列索引 → Excel 列字母。0→A, 3→D"""
     result = ""
@@ -59,6 +66,23 @@ def _cell_role_from_color(color_index: int, row: int, data_row_start: int,
     return "HEADER"
 
 
+def _cell_role_from_layout(
+    color_index: int,
+    row: int,
+    col: int,
+    layout: ExcelDataLayout,
+) -> str:
+    if color_index in _NO_DATA_COLOR_INDICES:
+        return "NO_DATA"
+    if color_index in _DERIVED_COLOR_INDICES:
+        return "DERIVED"
+    if color_index in _FILLABLE_COLOR_INDICES:
+        return "FILLABLE"
+    if row >= layout.data_row_start and col in layout.data_cols:
+        return "FILLABLE"
+    return "HEADER"
+
+
 def _detect_data_boundary(sheet: xlrd.sheet.Sheet) -> tuple[int, int]:
     """
     自动检测数据区域起始行和起始列。
@@ -77,6 +101,78 @@ def _detect_data_boundary(sheet: xlrd.sheet.Sheet) -> tuple[int, int]:
         stacklevel=2,
     )
     return 0, 0
+
+
+def _detect_data_layout(sheet: xlrd.sheet.Sheet) -> ExcelDataLayout:
+    """Detect business data rows and reporting measure columns.
+
+    G31-style 1104 templates have row numbers/business labels on the left and
+    regulatory measure columns marked by header letters such as A/B/C/D/E.
+    The previous boundary detector returned column A because the first data
+    row contains the row number "1.0", which polluted diff results with
+    structural columns. This layout detector anchors on the regulatory header
+    letters instead.
+    """
+    data_row_start, fallback_col_start = _detect_data_boundary(sheet)
+    header_row, data_cols = _detect_measure_header_columns(sheet, data_row_start)
+    if not data_cols:
+        data_cols = list(range(fallback_col_start, sheet.ncols))
+        header_row = max(0, data_row_start - 1)
+    return ExcelDataLayout(
+        data_row_start=data_row_start,
+        data_cols=data_cols,
+        header_row_start=header_row,
+    )
+
+
+def _detect_measure_header_columns(
+    sheet: xlrd.sheet.Sheet,
+    data_row_start: int,
+) -> tuple[int, list[int]]:
+    best_row = 0
+    best_cols: list[int] = []
+    for row in range(data_row_start):
+        letter_cols = [
+            col
+            for col in range(sheet.ncols)
+            if re.fullmatch(r"[A-Z]{1,2}", str(sheet.cell_value(row, col)).strip())
+        ]
+        for group in _consecutive_groups(letter_cols):
+            if len(group) > len(best_cols):
+                best_row = row
+                best_cols = group
+    return best_row, best_cols
+
+
+def _consecutive_groups(values: list[int]) -> list[list[int]]:
+    if not values:
+        return []
+    groups: list[list[int]] = []
+    current = [values[0]]
+    for value in values[1:]:
+        if value == current[-1] + 1:
+            current.append(value)
+        else:
+            groups.append(current)
+            current = [value]
+    groups.append(current)
+    return groups
+
+
+def _business_row_label(sheet: xlrd.sheet.Sheet, row: int, data_col_start: int) -> str:
+    for col in range(data_col_start - 1, -1, -1):
+        value = str(sheet.cell_value(row, col)).strip()
+        if value and not re.fullmatch(r"\d+(?:\.0+)?", value):
+            return value
+    for col in range(data_col_start - 1, -1, -1):
+        value = str(sheet.cell_value(row, col)).strip()
+        if value:
+            return value
+    return f"ROW_{row}"
+
+
+def _is_non_business_row_label(label: str) -> bool:
+    return any(keyword in label for keyword in ("填表人", "复核人", "负责人", "联系人", "联系电话"))
 
 
 def parse_excel(
@@ -105,7 +201,8 @@ def parse_excel(
 
     result = ExcelParseResult()
     _tc_role_map: dict[tuple[int, int], str] = {}
-    data_row_start, data_col_start = _detect_data_boundary(sheet)
+    layout = _detect_data_layout(sheet)
+    data_col_start = min(layout.data_cols) if layout.data_cols else 0
 
     # ── 1. 提取所有 template_cells ──────────────────────────────────────────
     merge_map: dict[tuple[int, int], dict] = {}
@@ -124,7 +221,7 @@ def parse_excel(
             except Exception:
                 color_index = 64
 
-            role = _cell_role_from_color(color_index, row, data_row_start, col, data_col_start)
+            role = _cell_role_from_layout(color_index, row, col, layout)
             raw_text = str(cell.value).strip() if cell.value else ""
 
             style = {"color_index": color_index, "role": role}
@@ -142,11 +239,11 @@ def parse_excel(
             })
             _tc_role_map[(row, col)] = role
 
-    # ── 2. 提取列维度成员（列头：data_row_start 以上的行，data_col_start 以右）──
+    # ── 2. 提取列维度成员（度量列头：A/B/C... 行到数据区前一行）──────────────
     col_labels: dict[int, str] = {}
-    for col in range(data_col_start, sheet.ncols):
+    for col in layout.data_cols:
         label_parts = []
-        for row in range(data_row_start):
+        for row in range(layout.header_row_start, layout.data_row_start):
             cell = sheet.cell(row, col)
             txt = str(cell.value).strip() if cell.value else ""
             if txt:
@@ -159,33 +256,34 @@ def parse_excel(
             "member_name": label,
             "axis": "COLUMN",
             "display_order": col - data_col_start,
-            "source_cell_ref": _excel_ref(data_row_start - 1, col),
+            "source_cell_ref": _excel_ref(layout.data_row_start - 1, col),
         })
 
     # ── 3. 提取行维度成员（行标签：data_col_start-1 列，data_row_start 以下）──
     row_labels: dict[int, str] = {}
     label_col = max(data_col_start - 1, 0)
 
-    for row in range(data_row_start, sheet.nrows):
-        cell = sheet.cell(row, label_col)
-        label = str(cell.value).strip() if cell.value else f"ROW_{row}"
+    for row in range(layout.data_row_start, sheet.nrows):
+        label = _business_row_label(sheet, row, data_col_start)
         row_labels[row] = label
         row_slug = _slugify(label)
         result.dimension_members.append({
             "member_code": f"{object_code}.{section_code}.ROW.{row_slug}",
             "member_name": label,
             "axis": "ROW",
-            "display_order": row - data_row_start,
+            "display_order": row - layout.data_row_start,
             "source_cell_ref": _excel_ref(row, label_col),
         })
 
     # ── 4. 生成 reporting_items（数据区域内非 NO_DATA 单元格）────────────────
     seen_codes: set[str] = set()
-    for row in range(data_row_start, sheet.nrows):
+    for row in range(layout.data_row_start, sheet.nrows):
         row_label = row_labels.get(row, f"ROW_{row}")
+        if _is_non_business_row_label(row_label):
+            continue
         row_slug = _slugify(row_label)
 
-        for col in range(data_col_start, sheet.ncols):
+        for col in layout.data_cols:
             col_label = col_labels.get(col, f"COL_{col}")
             col_slug = _slugify(col_label)
 

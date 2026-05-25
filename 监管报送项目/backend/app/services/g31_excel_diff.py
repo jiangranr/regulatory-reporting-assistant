@@ -17,7 +17,12 @@ from dataclasses import dataclass
 
 from sqlmodel import Session, select
 
-from app.models.db_models import RegReportingItem, RegReportingObject
+from app.models.db_models import (
+    RegReportingItem,
+    RegReportingObject,
+    RegReportingTemplate,
+    RegReportingTemplateCell,
+)
 from app.services.excel_parser import ExcelParseResult
 from app.services.reporting_item_scope import filter_analysis_items
 
@@ -37,6 +42,114 @@ def _slugify(text: str) -> str:
     text = re.sub(r'[^\w一-鿿]', '_', text.strip())
     text = re.sub(r'_+', '_', text).strip('_')
     return text[:40] if text else "UNKNOWN"
+
+
+def _normalise_row_label(text: str) -> str:
+    label = re.sub(r"\s+", "", text.strip())
+    label = re.sub(r"^(其中[:：]?)?\d+(?:\.\d+)*[、.．]?", r"\1", label)
+    label = re.sub(r"^[一二三四五六七八九十]+[、.．]", "", label)
+    label = re.sub(r"^[（(][一二三四五六七八九十]+[）)]", "", label)
+    return label
+
+
+def _row_slugify(text: str) -> str:
+    return _slugify(_normalise_row_label(text))
+
+
+def _normalise_column_label(text: str) -> str:
+    label = re.sub(r"\s+", "", text.strip())
+    label = re.sub(r"^单位[:：]?万元[·_]*", "", label)
+    label = re.sub(r"[·（）()]", "", label)
+    return label
+
+
+def _col_slugify(text: str) -> str:
+    return _slugify(_normalise_column_label(text))
+
+
+def _cell_ref_to_indexes(cell_ref: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"([A-Z]+)(\d+)", (cell_ref or "").upper())
+    if not match:
+        return None
+    col_letters, row_text = match.groups()
+    col = 0
+    for char in col_letters:
+        col = col * 26 + (ord(char) - ord("A") + 1)
+    return int(row_text) - 1, col - 1
+
+
+def _build_business_row_label_aliases(
+    session: Session,
+    obj: RegReportingObject,
+    db_items: list[RegReportingItem],
+) -> dict[str, str]:
+    template_ids = [
+        template.id
+        for template in session.exec(
+            select(RegReportingTemplate).where(
+                RegReportingTemplate.reporting_object_id == obj.id,
+                RegReportingTemplate.status == "ACTIVE",
+            )
+        ).all()
+        if template.id is not None
+    ]
+    if not template_ids:
+        return {}
+
+    source_ref_by_item: dict[str, tuple[int, int]] = {}
+    for item in db_items:
+        indexes = _cell_ref_to_indexes(item.source_cell_ref)
+        if indexes:
+            source_ref_by_item[item.item_code] = indexes
+    if not source_ref_by_item:
+        return {}
+
+    row_indexes = {row for row, _col in source_ref_by_item.values()}
+    template_cells = session.exec(
+        select(RegReportingTemplateCell).where(
+            RegReportingTemplateCell.template_id.in_(template_ids),
+            RegReportingTemplateCell.row_index.in_(row_indexes),
+        )
+    ).all()
+    cells_by_row: dict[int, list[RegReportingTemplateCell]] = {}
+    for cell in template_cells:
+        if cell.raw_text.strip():
+            cells_by_row.setdefault(cell.row_index, []).append(cell)
+
+    aliases: dict[str, str] = {}
+    for item in db_items:
+        if not _should_use_template_row_alias(item.row_label):
+            continue
+        source_indexes = source_ref_by_item.get(item.item_code)
+        if not source_indexes:
+            continue
+        row_index, source_col = source_indexes
+        for cell in sorted(cells_by_row.get(row_index, []), key=lambda c: c.col_index, reverse=True):
+            text = cell.raw_text.strip()
+            if cell.col_index >= source_col or not text:
+                continue
+            if re.fullmatch(r"\d+(?:\.0+)?", text):
+                continue
+            aliases[item.item_code] = text
+            break
+    return aliases
+
+
+def _should_use_template_row_alias(row_label: str) -> bool:
+    label = re.sub(r"\s+", "", row_label.strip())
+    return bool(re.fullmatch(r"\d+(?:\.0+)?", label) or label.startswith("ROW_"))
+
+
+def _is_structural_column_label(column_label: str) -> bool:
+    label = re.sub(r"\s+", "", column_label.strip())
+    if not label or label.startswith("COL_"):
+        return True
+    structural_keywords = ("投资业务情况表", "填报机构", "报表日期", "项目", "项　　目")
+    return any(keyword in label for keyword in structural_keywords)
+
+
+def _is_non_business_row_label(row_label: str) -> bool:
+    return any(keyword in row_label for keyword in ("填表人", "复核人", "负责人", "联系人", "联系电话"))
 
 
 def diff_excel_with_db(
@@ -75,19 +188,25 @@ def diff_excel_with_db(
     ).all())
 
     # 构建库中已有指标的 (row_slug, col_slug) → item 映射
-    db_key_map: dict[tuple[str, str], RegReportingItem] = {}
+    db_key_map: dict[tuple[str, str], tuple[RegReportingItem, str]] = {}
+    db_row_aliases = _build_business_row_label_aliases(session, obj, db_items)
     for db_item in db_items:
-        row_slug = _slugify(db_item.row_label)
-        col_slug = _slugify(db_item.column_label)
-        db_key_map[(row_slug, col_slug)] = db_item
+        if _is_structural_column_label(db_item.column_label):
+            continue
+        row_label = db_row_aliases.get(db_item.item_code, db_item.row_label)
+        if _is_non_business_row_label(row_label):
+            continue
+        row_slug = _row_slugify(row_label)
+        col_slug = _col_slugify(db_item.column_label)
+        db_key_map[(row_slug, col_slug)] = (db_item, row_label)
 
     # 构建新 Excel 中指标的映射
     new_key_map: dict[tuple[str, str], dict] = {}
     for item in new_result.items:
         if not _is_analysis_item_dict(item):
             continue
-        row_slug = _slugify(item["row_label"])
-        col_slug = _slugify(item["column_label"])
+        row_slug = _row_slugify(item["row_label"])
+        col_slug = _col_slugify(item["column_label"])
         new_key_map[(row_slug, col_slug)] = item
 
     diffs: list[ExcelDiffEntry] = []
@@ -104,23 +223,23 @@ def diff_excel_with_db(
             ))
 
     # 删除（库中有、新 Excel 无）
-    for key, db_item in db_key_map.items():
+    for key, (db_item, db_row_label) in db_key_map.items():
         if key not in new_key_map:
             diffs.append(ExcelDiffEntry(
                 item_code=db_item.item_code,
-                row_label=db_item.row_label,
+                row_label=db_row_label,
                 column_label=db_item.column_label,
                 diff_type="REMOVED",
-                evidence=f"库中指标在新版 Excel 中消失：行[{db_item.row_label}] 列[{db_item.column_label}]",
+                evidence=f"库中指标在新版 Excel 中消失：行[{db_row_label}] 列[{db_item.column_label}]",
             ))
 
     # 标签变化（同 slug 键但 label 文字不同）
     for key in new_key_map.keys() & db_key_map.keys():
         new_item = new_key_map[key]
-        db_item = db_key_map[key]
+        db_item, db_row_label = db_key_map[key]
         label_changed = (
-            new_item["row_label"] != db_item.row_label
-            or new_item["column_label"] != db_item.column_label
+            _normalise_row_label(new_item["row_label"]) != _normalise_row_label(db_row_label)
+            or _normalise_column_label(new_item["column_label"]) != _normalise_column_label(db_item.column_label)
         )
         if label_changed:
             diffs.append(ExcelDiffEntry(
@@ -128,10 +247,10 @@ def diff_excel_with_db(
                 row_label=new_item["row_label"],
                 column_label=new_item["column_label"],
                 diff_type="LABEL_CHANGED",
-                old_row_label=db_item.row_label,
+                old_row_label=db_row_label,
                 old_col_label=db_item.column_label,
                 evidence=(
-                    f"标签变化：行 [{db_item.row_label}→{new_item['row_label']}] "
+                    f"标签变化：行 [{db_row_label}→{new_item['row_label']}] "
                     f"列 [{db_item.column_label}→{new_item['column_label']}]"
                 ),
             ))
