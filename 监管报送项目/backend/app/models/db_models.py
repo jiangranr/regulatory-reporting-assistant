@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, Text, UniqueConstraint
+from sqlalchemy import Column, LargeBinary, Text, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from app.models.enums import DocumentStatus, RiskLevel, TaskStatus
@@ -579,6 +579,35 @@ class RegConceptReportingItemMap(SQLModel, table=True):
     role: str  # PRIMARY_METRIC / FILTER / EXCLUSION / DENOMINATOR / DIMENSION / ANNOTATION
     confidence_level: str = "MEDIUM"
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RegConceptEmbedding(SQLModel, table=True):
+    """概念向量缓存（独立表）。
+
+    设计依据 docs/concept-and-ticket-reuse-design.md §3 补丁 A 路 4。
+
+    为什么独立表（不放主表字段）：
+    - 未来换 embedding 模型时可并存多套向量，按 model_name 切换；不污染主表
+    - 主表 RegConcept 保持业务字段纯净，迁移代价低
+    - 向量列是 BLOB，与文本检索完全解耦
+
+    vector 字段为 float32 小端序列化（struct.pack("<{dim}f", ...)），
+    避免 JSON 浮点精度损失 + 体积膨胀。
+    """
+
+    __tablename__ = "reg_concept_embedding"
+    __table_args__ = (
+        UniqueConstraint("concept_id", "model_name", name="uk_concept_embedding"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    concept_id: int = Field(index=True)
+    model_name: str = Field(index=True)  # 例 text-embedding-v3 / bge-m3
+    dim: int  # 向量维度
+    vector: bytes = Field(sa_column=Column(LargeBinary))  # float32 序列化
+    source_text: str = Field(default="", sa_column=Column(Text))  # 生成时喂给模型的文本
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class RegCatalogBatch(SQLModel, table=True):
