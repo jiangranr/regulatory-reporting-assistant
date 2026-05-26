@@ -1,0 +1,45 @@
+{
+  "id": "g31_252_vs_251",
+  "description": "G31 投资业务情况表 251 → 252：核心变化是删除资产支持证券/信贷资产证券化相关行；不应出现 250 个新增、单位：万元误报、外国债券误判等历史 bug",
+  "category": "rule_based",
+  "target": "triplet_excel_diff",
+  "tags": ["1104", "G31", "regression"],
+  "inputs": {
+    "object_code": "G31",
+    "baseline_file": "一表通/附件4：报表表样和填报说明汇总/2.修订报表（基础类、业务类、支持发展类）/G31/G31(251).xls",
+    "template_file": "一表通/附件4：报表表样和填报说明汇总/2.修订报表（基础类、业务类、支持发展类）/G31/G31(252).xls",
+    "baseline_version": "251"
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 8, "max": 30 },
+      "reason": "G31 251→252 真实差异在 10~20 条范围，超过 30 即可能是噪声"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "change_type": "DELETE", "keyword_any": ["资产支持证券", "证券化"] },
+      "reason": "G31 252 删除了 1.8 资产支持证券 / 1.8.1 信贷资产证券化 等行"
+    },
+    {
+      "kind": "all_signals_match",
+      "spec": { "field": "change_type", "in": ["DELETE", "ADD", "MODIFY"] },
+      "reason": "diff 路径只应产出已知 change_type，UNCLEAR 应在上游过滤掉"
+    },
+    {
+      "kind": "must_not_contain",
+      "spec": { "keyword": "单位：万元" },
+      "reason": "历史 bug：把单位标签当作列变化（fix in commit d3e0f9c）"
+    },
+    {
+      "kind": "must_not_contain",
+      "spec": { "keyword": "外国债券" },
+      "reason": "历史 bug：renumbering 噪声把不变行误判为变更"
+    },
+    {
+      "kind": "must_not_contain",
+      "spec": { "change_type": "ADD", "regex": "新增\\s*250" },
+      "reason": "历史 bug：Codex 早期错误产出『新增 250 个指标格』"
+    }
+  ]
+}
