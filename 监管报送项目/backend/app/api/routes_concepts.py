@@ -20,12 +20,12 @@ from app.models.db_models import (
     RegConceptReportingItemMap,
 )
 from app.models.schemas import (
-    ConceptMatchHit,
     ConceptMatchRequest,
     ConceptMatchResponse,
     ConceptRead,
     ReviewActionRequest,
 )
+from app.services.concept_matcher import get_concept_matcher
 
 
 router = APIRouter(prefix="/api/concepts", tags=["concepts"])
@@ -102,86 +102,27 @@ def review_concept(
 def match_concepts(
     request: ConceptMatchRequest, session: Session = Depends(get_session)
 ) -> ConceptMatchResponse:
-    """从文本中匹配概念(基于 alias 的关键词匹配,P0 不做语义检索)。
+    """文本→概念匹配。多路召回 + 加权聚合，由 ConceptMatcher 统一执行。
 
-    匹配规则:
-    1. 取所有 ACTIVE 概念的 aliases
-    2. 在 text 中 substring 搜索,记录命中位置
-    3. 同一概念多次命中只保留首次
-    4. 长别名优先(避免短词把长词盖住)
+    召回路径：
+      路 1 alias substring（沿用长别名优先 + span 占用避重叠）
+      路 2 definition substring（短/全定义 ≥4 字片段命中，弱信号）
+      路 4 embedding 余弦相似度（远程 API，>=0.55 阈值）
+
+    降级策略：
+      - embedding API 未配置 / 向量库未建 / API 失败 → 自动退路 1+2
+      - 业务方 schema 完全不变
+
+    详见 docs/concept-and-ticket-reuse-design.md §3 补丁 A
+    与 app/services/concept_matcher.py
     """
-    text = request.text or ""
-    if not text:
-        return ConceptMatchResponse(hits=[])
-
-    concept_query = select(RegConcept).where(RegConcept.status == "ACTIVE")
-    if request.reporting_system_scope:
-        concept_query = concept_query.where(
-            (RegConcept.reporting_system_scope == request.reporting_system_scope)
-            | (RegConcept.reporting_system_scope == "CROSS")
-        )
-    concepts = list(session.exec(concept_query).all())
-    concept_by_id = {c.id: c for c in concepts if c.id is not None}
-    if not concept_by_id:
-        return ConceptMatchResponse(hits=[])
-
-    aliases = list(
-        session.exec(
-            select(RegConceptAlias).where(
-                RegConceptAlias.concept_id.in_(concept_by_id.keys())
-            )
-        ).all()
+    matcher = get_concept_matcher(session)  # 根据 settings 自动决定 enable_embedding
+    hits = matcher.match(
+        text=request.text or "",
+        scope=request.reporting_system_scope,
+        top_k=request.top_k,
     )
-    # 长别名优先匹配(避免"同业融入"先匹掉而漏了"同业融入余额")
-    aliases.sort(key=lambda a: len(a.alias_text), reverse=True)
-
-    matched_concept_ids: dict[int, ConceptMatchHit] = {}
-    consumed_spans: list[tuple[int, int]] = []  # 已匹配的 (start, end),避免别名重叠
-
-    for alias in aliases:
-        if alias.concept_id in matched_concept_ids:
-            continue
-        offset = text.find(alias.alias_text)
-        if offset < 0:
-            continue
-        end = offset + len(alias.alias_text)
-        # 若该范围已被更长别名占用,跳过
-        if any(s <= offset < e or s < end <= e for s, e in consumed_spans):
-            continue
-        concept = concept_by_id.get(alias.concept_id)
-        if concept is None:
-            continue
-        matched_concept_ids[alias.concept_id] = ConceptMatchHit(
-            concept_code=concept.concept_code,
-            canonical_name=concept.canonical_name,
-            matched_alias=alias.alias_text,
-            match_offset=offset,
-            match_length=len(alias.alias_text),
-        )
-        consumed_spans.append((offset, end))
-
-    hit_concept_ids = list(matched_concept_ids.keys())
-    item_maps = list(
-        session.exec(
-            select(RegConceptReportingItemMap).where(
-                RegConceptReportingItemMap.concept_id.in_(hit_concept_ids)
-            )
-        ).all()
-    )
-    items_by_concept: dict[int, list[str]] = {}
-    for mapping in item_maps:
-        items_by_concept.setdefault(mapping.concept_id, []).append(
-            mapping.reporting_item_code
-        )
-
-    hits: list[ConceptMatchHit] = []
-    for cid, hit in matched_concept_ids.items():
-        hit.related_reporting_item_codes = items_by_concept.get(cid, [])
-        hits.append(hit)
-
-    # 按 match_offset 排序,top_k 截断
-    hits.sort(key=lambda h: h.match_offset)
-    return ConceptMatchResponse(hits=hits[: request.top_k])
+    return ConceptMatchResponse(hits=hits)
 
 
 def _enrich(concepts: list[RegConcept], session: Session) -> list[ConceptRead]:

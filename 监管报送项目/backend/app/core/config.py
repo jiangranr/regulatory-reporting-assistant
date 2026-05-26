@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-v3"  # DashScope 默认；切提供方时改这里
     embedding_dim: int = 1024
     embedding_timeout_seconds: int = 30
-    embedding_batch_size: int = 25  # DashScope 单请求上限 25，OpenAI 上限 2048
+    embedding_batch_size: int = 10  # DashScope text-embedding-v3 实测上限 10；OpenAI 兼容协议各家不同，10 是安全默认
 
     model_config = SettingsConfigDict(
         env_file=".env",
