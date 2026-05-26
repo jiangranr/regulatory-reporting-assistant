@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from app.api.routes_concepts import match_concepts
 from app.models.db_models import (
     RegReportingItem,
     RegReportingObject,
@@ -27,6 +28,8 @@ from app.models.db_models import (
     RegReportingTemplateCell,
     RegReportingVersion,
 )
+from app.models.schemas import ConceptMatchRequest
+from app.services.concept_seed import seed_concepts_and_rule_cards
 from app.services.excel_parser import ExcelParseResult, parse_excel
 from app.services.g31_excel_diff import diff_excel_with_db
 
@@ -190,6 +193,66 @@ def _run_triplet_excel_diff(inputs: dict[str, Any]) -> list[dict[str, Any]]:
                 "row_label": diff.row_label,
                 "column_label": diff.column_label,
                 "diff_type": diff.diff_type,
+            }
+        )
+    return signals
+
+
+# ── concept_match target ────────────────────────────────────────────────
+
+
+def _session_with_concept_seed() -> Session:
+    """启一个内存 DB，灌入 35+ 概念种子。"""
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+    session = Session(engine)
+    seed_concepts_and_rule_cards(session)
+    return session
+
+
+@register_target("concept_match")
+def _run_concept_match(inputs: dict[str, Any]) -> list[dict[str, Any]]:
+    """走 /api/concepts/match 的全流程。
+
+    inputs 期望字段：
+      text: str                   要匹配的发文片段
+      reporting_system_scope: str=None  限制召回的体系（1104 / EAST / 一表通），默认全部
+      top_k: int=20               最多返回多少条命中
+
+    返回的每条 signal-like dict 字段：
+      concept_code           主键，用于断言"必须命中 X 概念"
+      canonical_name         概念规范名
+      matched_alias          实际命中的别名文本
+      match_offset           别名在 text 中的位置
+      change_type            统一填 "MATCH"，方便走既有断言 spec
+      indicator_hint         填 concept_code 让 keyword spec 可命中
+      evidence_text          填 canonical_name + matched_alias 便于关键词匹配
+      related_reporting_item_codes  通过该概念辐射的报送项
+    """
+
+    text = inputs["text"]
+    request = ConceptMatchRequest(
+        text=text,
+        reporting_system_scope=inputs.get("reporting_system_scope"),
+        top_k=int(inputs.get("top_k", 20)),
+    )
+    session = _session_with_concept_seed()
+    response = match_concepts(request, session)
+
+    signals: list[dict[str, Any]] = []
+    for hit in response.hits:
+        related = list(hit.related_reporting_item_codes or [])
+        signals.append(
+            {
+                "concept_code": hit.concept_code,
+                "canonical_name": hit.canonical_name,
+                "matched_alias": hit.matched_alias,
+                "match_offset": hit.match_offset,
+                "change_type": "MATCH",
+                "table_code": related[0].split(".")[0] if related else "",
+                "indicator_hint": hit.concept_code,
+                "evidence_text": f"{hit.canonical_name} | {hit.matched_alias}",
+                "related_reporting_item_codes": related,
             }
         )
     return signals

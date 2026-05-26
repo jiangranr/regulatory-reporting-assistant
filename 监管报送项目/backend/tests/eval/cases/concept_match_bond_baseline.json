@@ -1,0 +1,23 @@
+{
+  "id": "concept_match_bond_baseline",
+  "description": "G31 债券投资余额通过 alias '债券投资账面余额' 应命中。基线 case：测的是 '长别名优先' 不会漏掉精确命中。",
+  "category": "rule_based",
+  "target": "concept_match",
+  "tags": ["concept", "baseline", "G31"],
+  "inputs": {
+    "text": "G31 投资业务情况表新增穿透前后的债券投资账面余额对照填报。",
+    "reporting_system_scope": "1104"
+  },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_BOND_INVESTMENT_BAL" },
+      "reason": "alias '债券投资账面余额' 是 CON_BOND_INVESTMENT_BAL 的同义词"
+    },
+    {
+      "kind": "signal_count",
+      "spec": { "min": 1, "max": 8 },
+      "reason": "至少命中债券投资余额，可能辐射出穿透/底层资产等相关概念"
+    }
+  ]
+}

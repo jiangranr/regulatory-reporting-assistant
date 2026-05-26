@@ -1,0 +1,28 @@
+{
+  "id": "concept_match_interbank_baseline",
+  "description": "同业融入余额（CON_INTERBANK_BORROWING_BAL）通过现有 alias 应稳定命中。基线 case：补丁 A 上线前后此 case 都必须 pass，作为单路 alias 召回的兜底。",
+  "category": "rule_based",
+  "target": "concept_match",
+  "tags": ["concept", "baseline", "G24"],
+  "inputs": {
+    "text": "本通知要求商业银行将同业融入余额按金融机构类型分类填报，覆盖境内境外全口径。",
+    "reporting_system_scope": "1104"
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 1, "max": 6 },
+      "reason": "至少命中 1 个核心概念；上限放宽允许跨概念辐射召回"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_INTERBANK_BORROWING_BAL" },
+      "reason": "alias 表里有'同业融入余额'，必须命中"
+    },
+    {
+      "kind": "all_signals_match",
+      "spec": { "field": "change_type", "in": ["MATCH"] },
+      "reason": "concept_match target 全部统一为 MATCH 类型"
+    }
+  ]
+}

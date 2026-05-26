@@ -236,28 +236,43 @@ routes_tasks.py::generate_task_ticket
 
 **问题**：1104 的 `CON_INTERBANK_BORROWING` ≈ 一表通的某个概念 ≈ EAST 的某个概念。现在三个体系各建一份，复用断在跨体系维度。
 
-**方案 1（推荐，最小侵入）**：给 `RegConcept` 加一个字段。
+**方案（2026-05-26 修订）**：**不加字段，新建"概念组"独立小表**。原因见 §9 长期决策锚点——为本体化升级留出平滑路径。
 
 ```sql
-ALTER TABLE reg_concept ADD COLUMN cross_system_group_code VARCHAR(64) NULL,
-  ADD INDEX idx_cross_group (cross_system_group_code);
+CREATE TABLE reg_concept_group (
+  id              BIGINT PRIMARY KEY,
+  group_code      VARCHAR(64) UNIQUE,        -- GRP_INTERBANK_BORROWING
+  group_name      VARCHAR(200),              -- 同业融入业务组
+  business_domain VARCHAR(64),               -- 同业 / 投资 / 信贷 / ...
+  covered_systems JSON,                      -- ["1104", "EAST", "一表通"]
+  short_definition TEXT,
+  created_at DATETIME, updated_at DATETIME
+);
+
+CREATE TABLE reg_concept_group_member (
+  id          BIGINT PRIMARY KEY,
+  group_id    BIGINT NOT NULL,
+  concept_id  BIGINT NOT NULL,
+  role        ENUM('CANONICAL','SYNONYM','PROJECTION'),  -- 同一组里某概念扮演的角色
+  confidence_level ENUM('HIGH','MEDIUM','LOW'),
+  created_at  DATETIME,
+  UNIQUE(group_id, concept_id)
+);
 ```
 
-- 同一业务概念在 1104/EAST/一表通 用同一 `cross_system_group_code`（如 `GRP_INTERBANK_BORROWING`）
-- 不强制：值为 NULL 表示纯单体系概念
-- `/match` 命中后做二次扩张：拉同 group_code 的其他概念，把它们关联的卡片也带出
-
-**方案 2（更结构化但复杂）**：新建 `reg_concept_cross_system_link` 表（如设计文档 §第三节补丁 ③ 描述）。
-
-**推荐方案 1**：字段足够；表只在概念数 >500 且跨体系关系复杂时才考虑升级。
+**为什么是表而不是字段**：
+- 一个概念可以属于多个 group（一对多 vs 多对多），字段方案天然限制
+- group 自身可以带属性（business_domain / covered_systems / 定义）
+- 未来升 Neo4j 时是平滑迁移：group 直接演化为节点类型，group_member 演化为 IS_A 关系
+- 工作量只比字段方案多 0.2 天
 
 **改动**：
-- `db_models.py::RegConcept`：加 `cross_system_group_code: str | None`
+- `db_models.py`：新增 `RegConceptGroup` + `RegConceptGroupMember`
 - `routes_concepts.py::match_concepts`：命中后做 group 扩张
-- DB migration：**有**（加列），向后兼容（nullable + 默认空）
-- 向后兼容：**是**
+- DB migration：**有**（建 2 张新表，不改既有表）
+- 向后兼容：**完全**（新表，旧逻辑零感知）
 
-**工作量**：0.5 天（schema + 扩展逻辑） + 1-2 天人工标定初始 group_code
+**工作量**：0.7 天（schema + 扩展逻辑） + 1-2 天人工标定初始 5-10 个 group
 
 ---
 
@@ -474,7 +489,7 @@ P2（30+ 天）：补丁 A 上 embedding（要加 sentence-transformers 依赖�
 | # | 决策点 | 结论 | 理由 |
 |---|---|---|---|
 | 1 | **补丁 B 是否新建 `reg_ticket_decision_snapshot` 表** | **先不建**。W2 纯视图层 service 跑通；若 W3 上线后发现查询性能不足 / 决策摘要不稳定，再补建快照表。 | 现有 `TicketDraft + ImpactItem + AuditLog + RuleCardValidation` 已记录全部决策证据，避免双写一致性 |
-| 2 | **补丁 D 用字段还是关系表** | **用字段**（`RegConcept.cross_system_group_code`） | 最小侵入；概念数 >500 且跨体系关系复杂时再升级为关系表 |
+| 2 | **补丁 D 用字段还是关系表** | **用独立"概念组"小表**（2026-05-26 修订原因见 §9）。多对多 + 为未来本体化留迁移路径，工作量只多 0.2 天 | 字段方案锁死一对多关系，未来升级要推翻重做 |
 | 3 | **补丁 A 是否在 W1 就上 embedding** | **不上**。先观察 3 路召回是否够；W4+ 再评估 | 加 `sentence-transformers` 依赖、引入向量列、增加部署复杂度；先用零依赖方案 |
 | 4 | **历史决策"采纳/退回"信号从哪取** | **`audit_logs` 约定写入规范，见下方 §7.1** | 工单关闭 API 强制写一条结构化 AuditLog，复用看板和决策档案 service 都依赖这条记录 |
 | 5 | **复用看板 6 个指标是否齐全** | **够用，W4 先实现这 6 个**，后续按真实使用场景再加 | 避免过度设计；先把"能看见飞轮转没转"做出来 |
@@ -536,3 +551,50 @@ LIMIT 10;
 - 不重做工单母子单结构（基础设施已就绪）
 - 不动前端 5 步流程页面结构（仅在 LibraryView 加看板）
 - 不接入真实权限模型（与既有文档一致）
+
+---
+
+## 9. 🚩 长期决策锚点：本体化升级触发条件
+
+> 此节是**未来决策的标尺**，不是当前要做的事。当前补丁 A-G 全部在关系型 + 三元组表（`RegConceptRelation`）的轻量本体抽象上完成，不引入图数据库。
+
+### 9.1 判断结论（2026-05-26 用户确认）
+
+**当真做 1104 → EAST → 一表通 → 反洗钱跨监管体系平台时，本体化升级几乎是唯一可行路径。**
+**非本体方案在跨第 3 个监管体系时维护爆炸。**
+
+理由：
+- 跨体系的等价关系数量随接入体系数呈组合增长（n 个体系约 n×(n-1)/2 组等价边）
+- `cross_system_group_code` 字段方案 / 概念组表方案在 3 个体系内可控，第 4 个体系起会变成"全网重新对齐"
+- 跨体系影响分析需要图遍历能力，关系型多 join 在跨 N 跳查询上性能塌方
+- 概念冲突裁决在多体系并行修订时，没有图谱视图人脑撑不住
+
+### 9.2 升级触发条件（任一满足即评估）
+
+| # | 信号 | 量化阈值 |
+|---|---|---|
+| 1 | 接入的监管体系数 | ≥ 3 |
+| 2 | 概念总数 | ≥ 300 |
+| 3 | 跨体系等价关系组数 | ≥ 30 |
+| 4 | 影响分析跨 N 跳查询 | N ≥ 4 且 P95 > 800ms |
+| 5 | 工单生成时反查决策档案性能 | 单次 > 2s |
+| 6 | 出现"非概念实体也需要 link"的真实需求 | 比如源系统字段、监管文件本身需要建模为对象 |
+
+任一信号触发，写一份 ADR（架构决策记录）正式评估。**不到触发条件不主动升级**。
+
+### 9.3 升级时点之前的工程约束
+
+为了让"未来要升时不用推翻重来"，当前所有补丁需遵守以下约束（已落实到补丁设计中）：
+
+| 约束 | 当前补丁里的体现 |
+|---|---|
+| 不在业务代码里直接写 SQL join 概念关系 | 走 `RegConceptRelation` 抽象，未来换图遍历只换 service 实现层 |
+| 跨体系绑定用独立的"概念组"概念，而非散落字段 | 补丁 D 改为新建 `reg_concept_group` + `reg_concept_group_member` 小表，未来直接演化为本体节点类型 |
+| 决策档案 service 提供"以概念为索引"的查询契约 | 补丁 B 的 `search_similar_decisions` 接口签名稳定，底层 SQL 视图 → 图遍历替换零侵入 |
+| eval framework 锁住"语义召回质量"基线 | 补丁 E 跑了一年的基线在未来切换召回引擎时是回归保护 |
+
+### 9.4 升级时不该做的事
+
+- 不要"为了升级而升级"：在阈值未达时引入 Neo4j 是过度工程
+- 不要把现有 8 张概念表全废掉重建：升级路径应是"并存 → 双写 → 切流量 → 下线旧表"
+- 不要一次性升所有补丁的查询：先升跨体系查询，决策档案查询可留在 SQL 视图层

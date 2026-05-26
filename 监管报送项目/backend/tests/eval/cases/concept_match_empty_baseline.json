@@ -1,0 +1,18 @@
+{
+  "id": "concept_match_empty_baseline",
+  "description": "无关文本不应误命中任何概念。基线 case：防止补丁 A 多路召回上线后引入误召回（precision 退化）。",
+  "category": "rule_based",
+  "target": "concept_match",
+  "tags": ["concept", "baseline", "negative"],
+  "inputs": {
+    "text": "本通知关于办公场所消防安全检查工作的部署，请各分支机构按时上报检查结果。",
+    "reporting_system_scope": "1104"
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 0, "max": 0 },
+      "reason": "消防安全相关文本与监管报送概念无关，必须召回 0 条"
+    }
+  ]
+}
