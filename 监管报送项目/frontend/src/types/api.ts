@@ -292,6 +292,10 @@ export interface ConceptMatchHit {
   match_offset: number;
   match_length: number;
   related_reporting_item_codes: string[];
+  /** 召回路径，元素取值 'alias' / 'definition' / 'embedding'，可多路同时命中 */
+  paths?: string[];
+  /** 多路加权得分，前端可按需做排序/透传 */
+  score?: number;
 }
 
 // 手动抽取结果(POST /api/extraction-jobs/manual 返回)

@@ -338,6 +338,9 @@ class ConceptMatcher:
                     related_reporting_item_codes=items_by_concept.get(
                         cand.concept_id, []
                     ),
+                    # 路径与得分透出给前端做"召回路径徽章 + 排序提示"
+                    paths=sorted(cand.paths),
+                    score=round(cand.score, 4),
                 )
             )
         return hits

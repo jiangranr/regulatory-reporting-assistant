@@ -25,6 +25,7 @@
       :documents="documents"
       :selected-document-id="selectedPortraitDocumentId"
       :selected-profile="selectedPortraitProfile"
+      :impact-item-count="portraitImpactItemCount"
       :instruction-analysis="instructionAnalysis"
       :analysis-busy="analysisBusy"
       :workflow="taskWorkflow"
@@ -39,8 +40,13 @@
     />
     <LineageView
       v-else-if="activePage === 'lineage'"
+      :key="lineageViewKey"
       :workflow="taskWorkflow"
+      :busy="busy"
+      :concept-hits="conceptHits"
+      :concept-hits-busy="conceptHitsBusy"
       :focus-item-code="focusedLineageItemCode"
+      @analyze="analyzeImpact"
       @continue="activePage = 'impact'"
       @back="activePage = 'portrait'"
     />
@@ -74,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
 import { apiClient } from "@/api/client";
 import AppShell, { type PageId } from "@/components/AppShell.vue";
@@ -88,6 +94,7 @@ import CatalogUploadView from "@/views/CatalogUploadView.vue";
 import LibraryView from "@/views/LibraryView.vue";
 import ConceptsView from "@/views/ConceptsView.vue";
 import type {
+  ConceptMatchHit,
   DocumentTaskProfile,
   InstructionChangeAnalysis,
   RegDocument,
@@ -112,6 +119,10 @@ const profileScanMessage = ref("");
 const analysisBusy = ref(false);
 const instructionAnalysis = ref<InstructionChangeAnalysis | null>(null);
 const errorMessage = ref("");
+const tripletImpactItemCounts = ref<Record<number, number>>({});
+// 当前发文命中的概念集合（驱动 LineageView 顶部横幅 + 右侧"通过哪些概念命中到这里"）
+const conceptHits = ref<ConceptMatchHit[]>([]);
+const conceptHitsBusy = ref(false);
 // 影响分析「查看血缘」跳转携带的指标 item_code；LineageView 据此聚焦节点
 const focusedLineageItemCode = ref<string | null>(null);
 function onViewLineage(itemCode: string): void {
@@ -121,6 +132,67 @@ function onViewLineage(itemCode: string): void {
 const selectedPortraitDocument = computed(() =>
   documents.value.find((doc) => doc.id === selectedPortraitDocumentId.value) ?? null
 );
+const portraitImpactItemCount = computed(() => {
+  const documentId = selectedPortraitDocumentId.value;
+  if (!documentId) return null;
+  return tripletImpactItemCounts.value[documentId] ?? null;
+});
+
+/**
+ * 当前 workflow 对应的文档文本签名，用于触发 conceptHits 重拉。
+ * 文档变 → profile.id 变 → 重新调 /concepts/match
+ */
+const conceptMatchSignature = computed(() => {
+  const w = taskWorkflow.value;
+  if (!w) return "";
+  const docId = w.document?.id ?? 0;
+  const profileId = w.document_profile?.id ?? 0;
+  return `${docId}:${profileId}`;
+});
+
+watch(
+  conceptMatchSignature,
+  async (sig) => {
+    if (!sig) {
+      conceptHits.value = [];
+      return;
+    }
+    const w = taskWorkflow.value;
+    const text = w?.document?.parsed_text ?? "";
+    if (!text.trim()) {
+      conceptHits.value = [];
+      return;
+    }
+    conceptHitsBusy.value = true;
+    try {
+      conceptHits.value = await apiClient.matchConcepts(text, 30);
+    } catch {
+      // 概念匹配失败不阻断 LineageView 主流程
+      conceptHits.value = [];
+    } finally {
+      conceptHitsBusy.value = false;
+    }
+  },
+  { immediate: true },
+);
+
+/**
+ * 给 LineageView 用的 :key —— 文档/画像/扫描结果一变就强制重建，
+ * 避免本地 activeTable/activeItem 选中状态粘到新 workflow 上。
+ * 同步组合 document_id + task_id + profile.id + change_signals 内容签名，
+ * 避免信号数量相同但内容已换成新文档时仍复用旧子组件状态。
+ */
+const lineageViewKey = computed(() => {
+  const w = taskWorkflow.value;
+  if (!w) return "empty";
+  const docId = w.document?.id ?? "none";
+  const taskId = w.task?.id ?? "none";
+  const profileId = w.document_profile?.id ?? "none";
+  const signalSignature = (w.document_profile?.change_signals ?? [])
+    .map((signal) => `${signal.matched_item_code ?? ""}:${signal.indicator_hint ?? ""}:${signal.change_type ?? ""}`)
+    .join("|");
+  return `${docId}:${taskId}:${profileId}:${signalSignature}`;
+});
 
 onMounted(async () => {
   await refreshLists();
@@ -172,6 +244,11 @@ async function uploadDocument(file: File): Promise<void> {
     documents.value = [doc, ...documents.value.filter((d) => d.id !== doc.id)];
     selectedPortraitDocumentId.value = doc.id;
     selectedPortraitProfile.value = null;
+    instructionAnalysis.value = null;
+    profileScanMessage.value = "";
+    focusedLineageItemCode.value = null;
+    setTripletImpactItemCount(doc.id, null);
+    syncPortraitWorkflow(doc.id, null);
   });
 }
 
@@ -181,11 +258,17 @@ async function uploadReportingPair(templateFile: File, instructionFile: File): P
     documents.value = [doc, ...documents.value.filter((d) => d.id !== doc.id)];
     selectedPortraitDocumentId.value = doc.id;
     selectedPortraitProfile.value = null;
+    instructionAnalysis.value = null;
+    profileScanMessage.value = "";
+    focusedLineageItemCode.value = null;
+    setTripletImpactItemCount(doc.id, null);
+    syncPortraitWorkflow(doc.id, null);
   });
 }
 
 function handleDocumentDeleted(documentId: number): void {
   documents.value = documents.value.filter((d) => d.id !== documentId);
+  setTripletImpactItemCount(documentId, null);
   if (selectedPortraitDocumentId.value === documentId) {
     selectedPortraitDocumentId.value = documents.value[0]?.id ?? null;
     selectedPortraitProfile.value = null;
@@ -197,9 +280,22 @@ async function handleTripletDone(result: TripletUploadResponse): Promise<void> {
     const doc = result.document;
     documents.value = [doc, ...documents.value.filter((d) => d.id !== doc.id)];
     selectedPortraitDocumentId.value = doc.id;
-    selectedPortraitProfile.value = await apiClient.profileDocument(doc.id);
+    instructionAnalysis.value = null;
+    focusedLineageItemCode.value = null;
+    setTripletImpactItemCount(doc.id, result.scan_results.length);
+    const profile = await apiClient.profileDocument(doc.id);
+    selectedPortraitProfile.value = profile;
+    syncPortraitWorkflow(doc.id, profile);
+    profileScanMessage.value = formatProfileScanMessage(profile);
     activePage.value = "portrait";
   });
+}
+
+function setTripletImpactItemCount(documentId: number, count: number | null): void {
+  const next = { ...tripletImpactItemCounts.value };
+  if (count === null) delete next[documentId];
+  else next[documentId] = count;
+  tripletImpactItemCounts.value = next;
 }
 
 async function createTaskFromDocument(documentId: number): Promise<void> {
@@ -225,9 +321,13 @@ async function profileDocument(documentId: number): Promise<void> {
     const relatedTask = tasks.value.find((t) => t.document_id === documentId);
     if (relatedTask) {
       busy.value = true;
-      taskWorkflow.value = await apiClient.getTaskWorkflow(relatedTask.id);
-      selectedPortraitProfile.value = taskWorkflow.value.document_profile ?? profile;
-      profileScanMessage.value = formatProfileScanMessage(selectedPortraitProfile.value);
+      const freshWorkflow = await apiClient.getTaskWorkflow(relatedTask.id);
+      // 兜底：后端 workflow 可能仍指向旧 profile 快照，强制覆盖为本轮最新结果，
+      // 避免「画像页 17 条 / 字段定位页 3 条」这种不一致。
+      freshWorkflow.document_profile = profile;
+      taskWorkflow.value = freshWorkflow;
+      selectedPortraitProfile.value = profile;
+      profileScanMessage.value = formatProfileScanMessage(profile);
       return;
     }
 
@@ -315,9 +415,34 @@ function syncPortraitWorkflow(
 async function analyzeImpact(): Promise<void> {
   if (!taskWorkflow.value) return;
   await withBusy(async () => {
-    await apiClient.analyzeImpact(taskWorkflow.value!.task.id);
-    taskWorkflow.value = await apiClient.getTaskWorkflow(taskWorkflow.value!.task.id);
+    const taskId = await ensureWorkflowTaskId();
+    await apiClient.analyzeImpact(taskId);
+    taskWorkflow.value = await apiClient.getTaskWorkflow(taskId);
   });
+}
+
+async function ensureWorkflowTaskId(): Promise<number> {
+  if (!taskWorkflow.value) {
+    throw new Error("尚未选择任务");
+  }
+  if (taskWorkflow.value.task.id > 0) {
+    return taskWorkflow.value.task.id;
+  }
+
+  const documentId = taskWorkflow.value.document.id;
+  const existingTask = tasks.value.find((task) => task.document_id === documentId);
+  if (existingTask) {
+    taskWorkflow.value = await apiClient.getTaskWorkflow(existingTask.id);
+    return existingTask.id;
+  }
+
+  const task = await apiClient.createTaskFromDocument(documentId);
+  tasks.value = [task, ...tasks.value.filter((item) => item.id !== task.id)];
+  taskWorkflow.value = {
+    ...taskWorkflow.value,
+    task,
+  };
+  return task.id;
 }
 
 async function generateTicket(): Promise<void> {

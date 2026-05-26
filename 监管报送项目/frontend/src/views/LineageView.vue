@@ -11,6 +11,13 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
           画像
         </button>
+        <button
+          class="btn primary"
+          :disabled="busy || !workflow?.document_profile"
+          @click="$emit('analyze')"
+        >
+          {{ busy ? "分析中…" : hasImpactAnalysis ? "重新影响分析" : "开始影响分析" }}
+        </button>
         <button class="btn primary" @click="$emit('continue')">
           影响分析
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
@@ -18,9 +25,39 @@
       </div>
     </div>
 
+    <!-- 命中概念横幅：本次发文整体命中的监管概念 chips -->
+    <div v-if="conceptHits.length || conceptHitsBusy" class="concept-banner mt-16">
+      <div class="concept-banner-head">
+        <span class="concept-banner-icon">💡</span>
+        <span class="concept-banner-title">
+          本次发文命中
+          <strong>{{ conceptHits.length }}</strong>
+          个监管概念
+        </span>
+        <span v-if="conceptHitsBusy" class="concept-banner-busy">匹配中…</span>
+        <span v-else class="concept-banner-sub">点击 chip 跳转到首个辐射的报送项</span>
+      </div>
+      <div class="concept-banner-chips">
+        <button
+          v-for="hit in conceptHits"
+          :key="hit.concept_code"
+          :class="['concept-chip', `concept-chip-${primaryPath(hit)}`]"
+          :title="`${hit.canonical_name} (${hit.concept_code})\n召回路径：${(hit.paths || []).join('+') || 'alias'}\n辐射 ${hit.related_reporting_item_codes.length} 个报送项`"
+          @click="onConceptChipClick(hit)"
+        >
+          <span class="concept-chip-name">{{ hit.canonical_name }}</span>
+          <!-- alias 优先：字面命中是确定性最强的信号；embedding 只在纯语义召回时单独显示 -->
+          <span v-if="hasPath(hit, 'alias')" class="concept-chip-badge concept-chip-badge-alias" :title="hasPath(hit, 'embedding') ? 'alias 字面命中 + AI 语义召回' : 'alias 字面命中'">A<span v-if="hasPath(hit, 'embedding')" class="concept-chip-badge-plus">+✨</span></span>
+          <span v-else-if="hasPath(hit, 'embedding')" class="concept-chip-badge" title="AI 语义召回（同义改写，文档中无字面别名）">✨</span>
+          <span v-else-if="hasPath(hit, 'definition')" class="concept-chip-badge concept-chip-badge-def" title="定义片段命中">D</span>
+          <span class="concept-chip-count">{{ hit.related_reporting_item_codes.length }}</span>
+        </button>
+      </div>
+    </div>
+
     <div class="lineage-layout mt-24">
       <!-- 左：报表目录树 -->
-      <div>
+      <div class="lineage-sidebar">
         <div class="tree">
           <div class="tree-header">
             <span>1104 报表目录</span>
@@ -36,16 +73,29 @@
               <span v-if="table.items.length" class="hit">+{{ table.items.length }}</span>
             </div>
             <div class="tree-child">
-              <div
-                v-for="item in table.items"
-                :key="item.code"
-                :class="['tree-node', { active: activeItem === item.code }]"
-                @click="activeTable = table.code; activeItem = item.code"
-              >
-                <span class="chev">·</span>
-                <span>{{ item.code }} {{ item.displayName }}</span>
-                <span v-if="item.changed" class="hit">!</span>
-              </div>
+              <template v-for="item in table.items" :key="item.code">
+                <div
+                  :class="['tree-node', { active: activeItem === item.code }]"
+                  @click="selectCatalogItem(table.code, item)"
+                >
+                  <span class="chev">{{ item.children.length > 1 ? (isGroupExpanded(item.code) ? "▾" : "▸") : "·" }}</span>
+                  <span>{{ item.code }} {{ item.displayName }}</span>
+                  <span v-if="item.children.length > 1" class="hit">+{{ item.children.length }}</span>
+                  <span v-else-if="item.changed" class="hit">!</span>
+                </div>
+                <div v-if="item.children.length > 1 && isGroupExpanded(item.code)" class="tree-grandchild">
+                  <div
+                    v-for="child in item.children"
+                    :key="child.code"
+                    :class="['tree-node', 'tree-node-detail', { active: activeItem === child.code }]"
+                    @click.stop="selectCatalogEntry(table.code, child.code)"
+                  >
+                    <span class="chev">·</span>
+                    <span>{{ child.displayName }}</span>
+                    <span v-if="child.changed" class="hit">!</span>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -68,10 +118,32 @@
             <div>
               <div class="row" style="gap:6px;">
                 <span class="tag outline mono">{{ activeSignal.table_code }}</span>
-                <span :class="['tag', changeTypeColor(activeSignal.change_type)]">{{ changeTypeLabel(activeSignal.change_type) }}</span>
+                <span :class="['tag', changeTypeColor(effectiveChangeType(activeSignal))]">{{ changeTypeLabel(effectiveChangeType(activeSignal)) }}</span>
               </div>
               <h3 style="margin-top:8px;">{{ displayIndicatorName(activeSignal.indicator_hint) || activeSignal.table_code + " 变更项" }}</h3>
               <div class="sub">{{ activeSignal.section_hint || "相关填报说明变更" }}</div>
+            </div>
+          </div>
+
+          <!-- 命中此报送项的概念列表（反向：从 reporting_item_code 反查 conceptHits） -->
+          <div v-if="conceptsHittingActiveItem.length" class="active-concepts">
+            <h4 class="active-concepts-title">
+              📌 通过这些概念辐射到此报送项
+              <span class="active-concepts-count">{{ conceptsHittingActiveItem.length }} 个</span>
+            </h4>
+            <div class="active-concepts-list">
+              <div v-for="hit in conceptsHittingActiveItem" :key="hit.concept_code" class="active-concept-row">
+                <span :class="['concept-chip', 'concept-chip-sm', `concept-chip-${primaryPath(hit)}`]">
+                  <span class="concept-chip-name">{{ hit.canonical_name }}</span>
+                  <span v-if="hasPath(hit, 'alias')" class="concept-chip-badge concept-chip-badge-alias">A<span v-if="hasPath(hit, 'embedding')" class="concept-chip-badge-plus">+✨</span></span>
+                  <span v-else-if="hasPath(hit, 'embedding')" class="concept-chip-badge" title="AI 语义召回">✨</span>
+                  <span v-else-if="hasPath(hit, 'definition')" class="concept-chip-badge concept-chip-badge-def">D</span>
+                </span>
+                <span class="active-concept-meta">
+                  <span class="active-concept-code">{{ hit.concept_code }}</span>
+                  <span class="active-concept-via">via {{ pathLabel(hit) }}</span>
+                </span>
+              </div>
             </div>
           </div>
 
@@ -162,7 +234,9 @@
                 </td>
               </tr>
               <tr v-if="!fieldMappings.length">
-                <td colspan="5" style="text-align:center;color:var(--ink-400);padding:16px;">暂无字段映射数据</td>
+                <td colspan="5" style="text-align:center;color:var(--ink-400);padding:16px;">
+                  {{ hasImpactAnalysis ? "暂无字段映射数据" : "尚未执行影响分析，请先点击开始影响分析生成候选和血缘上下文" }}
+                </td>
               </tr>
             </tbody>
           </table>
@@ -182,20 +256,30 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { TaskWorkflow, TableChangeType } from "@/types/api";
+import type { ConceptMatchHit, TaskWorkflow, TableChangeSignal, TableChangeType } from "@/types/api";
 import LineageGraph, { type LineageNode, type LineageEdge } from "@/components/LineageGraph.vue";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   workflow: TaskWorkflow | null;
+  busy?: boolean;
+  /** 本次发文命中的概念列表（来自 /api/concepts/match） */
+  conceptHits?: ConceptMatchHit[];
+  conceptHitsBusy?: boolean;
   /** 外部传入要聚焦的指标 item_code（例如从影响分析「查看血缘」跳过来）。 */
   focusItemCode?: string | null;
-}>();
+}>(), {
+  busy: false,
+  conceptHits: () => [],
+  conceptHitsBusy: false,
+  focusItemCode: null,
+});
 
-defineEmits<{ continue: []; back: [] }>();
+defineEmits<{ continue: []; back: []; analyze: [] }>();
 
 const activeTable = ref<string | null>(null);
 const activeItem = ref<string | null>(null);
 const activeGraphNodeId = ref<string | null>(null);
+const expandedGroups = ref<Set<string>>(new Set());
 
 const tableNames: Record<string, string> = {
   G21: "流动性期限缺口统计表",
@@ -205,28 +289,168 @@ const tableNames: Record<string, string> = {
   G31: "投资业务情况表",
 };
 
+interface CatalogChild {
+  code: string;
+  name: string;
+  displayName: string;
+  changed: boolean;
+  signal: TableChangeSignal;
+}
+
+interface CatalogItem extends CatalogChild {
+  children: CatalogChild[];
+}
+
+interface CatalogTable {
+  code: string;
+  name: string;
+  items: CatalogItem[];
+}
+
 // Build catalog from change_signals in profile
-const catalog = computed(() => {
+const catalog = computed<CatalogTable[]>(() => {
   const signals = props.workflow?.document_profile?.change_signals ?? [];
-  const byTable = new Map<string, typeof signals>();
+  const byTable = new Map<string, TableChangeSignal[]>();
   for (const s of signals) {
     if (!byTable.has(s.table_code)) byTable.set(s.table_code, []);
     byTable.get(s.table_code)!.push(s);
   }
-  return Array.from(byTable.entries()).map(([code, items]) => ({
-    code,
-    name: tableNames[code] ?? "",
-    items: items.map((s, i) => ({
-      code: `${code}.${i + 1}`,
-      name: s.indicator_hint || s.section_hint || "变更项",
-      displayName: displayIndicatorName(s.indicator_hint || s.section_hint || "变更项"),
-      changed: true,
-      signal: s,
-    })),
-  }));
+  return Array.from(byTable.entries()).map(([code, items]) => {
+    const byMetric = new Map<
+      string,
+      {
+        metric: string;
+        children: Array<{ raw: string; detailName: string; signal: TableChangeSignal }>;
+      }
+    >();
+
+    for (const signal of items) {
+      const raw = signal.indicator_hint || signal.section_hint || "变更项";
+      const parsed = parseIndicatorParts(raw);
+      const metricKey = normaliseForMatch(parsed.metric) || normaliseForMatch(raw);
+      if (!byMetric.has(metricKey)) {
+        byMetric.set(metricKey, { metric: parsed.metric, children: [] });
+      }
+      byMetric.get(metricKey)!.children.push({
+        raw,
+        detailName: parsed.detailName,
+        signal,
+      });
+    }
+
+    const groupedItems = Array.from(byMetric.values()).map((group, i) => {
+      const groupCode = `${code}.${i + 1}`;
+      const children = group.children.map((child, childIndex) => ({
+        code: `${groupCode}.${childIndex + 1}`,
+        name: child.raw,
+        displayName: child.detailName,
+        changed: true,
+        signal: child.signal,
+      }));
+      return {
+        code: groupCode,
+        name: group.metric,
+        displayName: group.metric,
+        changed: true,
+        signal: group.children[0].signal,
+        children,
+      };
+    });
+
+    return {
+      code,
+      name: tableNames[code] ?? "",
+      items: groupedItems,
+    };
+  });
 });
 
 const hitCount = computed(() => props.workflow?.document_profile?.change_signals.length ?? 0);
+const hasImpactAnalysis = computed(() =>
+  Boolean(
+    props.workflow?.impact_items?.length ||
+      props.workflow?.reporting_candidates?.length ||
+      props.workflow?.lineage_candidates?.length ||
+      props.workflow?.field_mappings?.length,
+  ),
+);
+
+// ── 概念命中相关工具 ─────────────────────────────────────────
+
+const _PATH_PRIORITY = ["alias", "embedding", "definition"] as const;
+
+function primaryPath(hit: ConceptMatchHit): string {
+  const paths = hit.paths ?? [];
+  for (const p of _PATH_PRIORITY) if (paths.includes(p)) return p;
+  return "alias";
+}
+
+function hasPath(hit: ConceptMatchHit, path: string): boolean {
+  return (hit.paths ?? []).includes(path);
+}
+
+function pathLabel(hit: ConceptMatchHit): string {
+  const paths = hit.paths ?? [];
+  if (!paths.length) return "alias 字面命中";
+  const labels: string[] = [];
+  if (paths.includes("alias")) labels.push("alias");
+  if (paths.includes("embedding")) labels.push("embedding 语义召回");
+  if (paths.includes("definition")) labels.push("definition 子串");
+  return labels.join(" + ");
+}
+
+/**
+ * 反查"哪些概念辐射到了当前 activeSignal 对应的报送项"。
+ * 优先级：matched_item_code → composite_match.reporting_item_codes → table_code 兜底
+ */
+const conceptsHittingActiveItem = computed<ConceptMatchHit[]>(() => {
+  const signal = activeSignal.value;
+  if (!signal || !props.conceptHits?.length) return [];
+
+  // 收集当前 signal 涉及的 item_code 集合
+  const targetCodes = new Set<string>();
+  if (signal.matched_item_code) targetCodes.add(signal.matched_item_code);
+  const composite = signal.composite_match;
+  if (composite?.reporting_item_codes) {
+    for (const c of composite.reporting_item_codes) targetCodes.add(c);
+  }
+
+  // 精确匹配优先
+  const exact = props.conceptHits.filter((h) =>
+    h.related_reporting_item_codes.some((c) => targetCodes.has(c)),
+  );
+  if (exact.length) return exact;
+
+  // 兜底：同 table_code 前缀的辐射
+  const tableCode = signal.table_code;
+  if (!tableCode) return [];
+  return props.conceptHits.filter((h) =>
+    h.related_reporting_item_codes.some((c) => c.startsWith(`${tableCode}.`)),
+  );
+});
+
+/** 点击顶部 chip 时，跳转到该概念辐射的首个报送项 */
+function onConceptChipClick(hit: ConceptMatchHit): void {
+  const firstItemCode = hit.related_reporting_item_codes[0];
+  if (!firstItemCode) return;
+  const tableCode = firstItemCode.split(".")[0];
+  if (!tableCode) return;
+  const table = catalog.value.find((t) => t.code === tableCode);
+  if (!table) return;
+  activeTable.value = tableCode;
+  // 在该报表下找首个匹配的 signal
+  const entries = flattenCatalogItems(table.items);
+  const hitEntry = entries.find(
+    (e) =>
+      e.signal.matched_item_code === firstItemCode ||
+      e.signal.composite_match?.reporting_item_codes?.includes(firstItemCode),
+  );
+  if (hitEntry) {
+    selectCatalogEntry(tableCode, hitEntry.code);
+  } else if (entries[0]) {
+    selectCatalogEntry(tableCode, entries[0].code);
+  }
+}
 
 /**
  * 处理"从影响分析跳转过来"的聚焦请求。
@@ -250,17 +474,18 @@ watch(
     const table = catalog.value.find((t) => t.code === tableCode);
     if (!table) return;
 
-    const exactHit = table.items.find((it) => it.signal.matched_item_code === code);
+    const entries = flattenCatalogItems(table.items);
+    const exactHit = entries.find((it) => it.signal.matched_item_code === code);
     if (exactHit) {
-      activeItem.value = exactHit.code;
+      selectCatalogEntry(tableCode, exactHit.code);
       return;
     }
 
-    const compositeHit = table.items.find((it) =>
+    const compositeHit = entries.find((it) =>
       it.signal.composite_match?.reporting_item_codes?.includes(code)
     );
     if (compositeHit) {
-      activeItem.value = compositeHit.code;
+      selectCatalogEntry(tableCode, compositeHit.code);
       return;
     }
 
@@ -271,18 +496,16 @@ watch(
 
     const norm = (s: string) => s.replace(/[-·_\s]/g, "");
     const k = norm(keyword);
-    const hit = table.items.find((it) => norm(it.signal.indicator_hint || "").includes(k));
-    if (hit) activeItem.value = hit.code;
+    const hit = entries.find((it) => norm(it.signal.indicator_hint || "").includes(k));
+    if (hit) selectCatalogEntry(tableCode, hit.code);
   },
   { immediate: true },
 );
 
 const activeSignal = computed(() => {
   if (activeItem.value) {
-    for (const t of catalog.value) {
-      const found = t.items.find((i) => i.code === activeItem.value);
-      if (found) return found.signal;
-    }
+    const found = findCatalogEntry(activeItem.value);
+    if (found) return found.signal;
   }
   if (activeTable.value) {
     const t = catalog.value.find((x) => x.code === activeTable.value);
@@ -537,6 +760,67 @@ function onSelectGraphNode(id: string) {
   activeGraphNodeId.value = activeGraphNodeId.value === id ? null : id;
 }
 
+function selectCatalogItem(tableCode: string, item: CatalogItem) {
+  activeTable.value = tableCode;
+  activeItem.value = item.code;
+  if (item.children.length > 1) {
+    setGroupExpanded(item.code, !isGroupExpanded(item.code));
+  }
+}
+
+function selectCatalogEntry(tableCode: string, itemCode: string) {
+  activeTable.value = tableCode;
+  activeItem.value = itemCode;
+  const groupCode = parentGroupCode(itemCode);
+  if (groupCode !== itemCode) {
+    setGroupExpanded(groupCode, true);
+  }
+}
+
+function parentGroupCode(itemCode: string): string {
+  const parts = itemCode.split(".");
+  if (parts.length < 3) return itemCode;
+  return `${parts[0]}.${parts[1]}`;
+}
+
+function isGroupExpanded(itemCode: string): boolean {
+  return expandedGroups.value.has(itemCode);
+}
+
+function setGroupExpanded(itemCode: string, expanded: boolean) {
+  const next = new Set(expandedGroups.value);
+  if (expanded) next.add(itemCode);
+  else next.delete(itemCode);
+  expandedGroups.value = next;
+}
+
+function flattenCatalogItems(items: CatalogItem[]): CatalogChild[] {
+  return items.flatMap((item) => [item, ...item.children]);
+}
+
+function findCatalogEntry(itemCode: string): CatalogChild | null {
+  for (const table of catalog.value) {
+    const found = flattenCatalogItems(table.items).find((item) => item.code === itemCode);
+    if (found) return found;
+  }
+  return null;
+}
+
+function parseIndicatorParts(raw = ""): { product: string; metric: string; detailName: string } {
+  const parts = raw.split("×").map((part) => cleanBusinessLabel(part)).filter(Boolean);
+  if (parts.length >= 2) {
+    const product = parts.slice(0, -1).join(" × ");
+    const metric = parts[parts.length - 1];
+    return {
+      product,
+      metric,
+      detailName: product ? `${product} × ${metric}` : metric,
+    };
+  }
+  const metric = displayIndicatorName(raw) || cleanBusinessLabel(raw) || "变更项";
+  return { product: "", metric, detailName: metric };
+}
+
 function displayIndicatorName(raw = ""): string {
   if (!raw.trim()) return "";
   const parts = raw.split("×").map((part) => cleanBusinessLabel(part)).filter(Boolean);
@@ -575,6 +859,17 @@ const changeTypeLabel = (t: TableChangeType): string =>
 const changeTypeColor = (t: TableChangeType): string =>
   ({ ADD: "green", MODIFY: "amber", DELETE: "red", SCOPE_ADJUST: "amber", INSTRUCTION_ADJUST: "blue", UNCLEAR: "outline" } as Record<string, string>)[t] ?? "outline";
 
+function effectiveChangeType(signal: TableChangeSignal): TableChangeType {
+  if (["INSTRUCTION_ADJUST", "UNCLEAR"].includes(signal.change_type)) {
+    const body = (signal.evidence_text || "").replace(/-?\s*\[\s*(?:新增|删除)\s*\|[^\]]+\]\s*/g, "").trim();
+    const businessText = `${signal.indicator_hint || ""} ${body}`;
+    if (/\[\s*新增\s*\|/.test(signal.evidence_text || "") && /新增\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)/.test(body)) return "ADD";
+    if (/\[\s*删除\s*\|/.test(signal.evidence_text || "") && /(?:删除|停报)\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)/.test(body)) return "DELETE";
+    if (/(定义|公式|计算|口径|范围|填报|统计)/.test(businessText)) return "SCOPE_ADJUST";
+  }
+  return signal.change_type;
+}
+
 const mappingStatusColor = (s: string): string =>
   ({ CONFIRMED: "green", DRAFT: "amber", PENDING: "amber", MISSING: "red" } as Record<string, string>)[s] ?? "outline";
 
@@ -587,3 +882,139 @@ const lineageRoleColor = (r: string): string =>
 const lineageRoleLabel = (r: string): string =>
   ({ REPORT_FIELD: "报送字段", SOURCE_FIELD: "来源字段", FILTER_FIELD: "过滤维度" } as Record<string, string>)[r] ?? r;
 </script>
+
+<style scoped>
+/* ── 命中概念横幅 ───────────────────────────────────────── */
+.concept-banner {
+  border: 1px solid var(--orange-100, #fde6cf);
+  background: linear-gradient(180deg, #fff8f1 0%, #fffefb 100%);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.concept-banner-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--ink-700, #444);
+}
+.concept-banner-icon { font-size: 14px; }
+.concept-banner-title strong { color: var(--orange-700, #d46a1d); font-weight: 600; }
+.concept-banner-sub {
+  margin-left: auto;
+  color: var(--ink-400, #9aa);
+  font-size: 11px;
+}
+.concept-banner-busy {
+  margin-left: auto;
+  color: var(--orange-600, #e08a3e);
+  font-size: 11px;
+}
+.concept-banner-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ── 概念 chip 通用样式 ─────────────────────────────────── */
+.concept-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.concept-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,.06); }
+.concept-chip-name { color: var(--ink-800, #333); }
+.concept-chip-count {
+  background: rgba(0,0,0,.06);
+  color: var(--ink-500, #888);
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  min-width: 14px;
+  text-align: center;
+}
+.concept-chip-badge {
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(255,255,255,.6);
+  color: var(--ink-700);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.concept-chip-badge-alias { background: rgba(48,127,226,.12); color: #2766b8; }
+.concept-chip-badge-def { background: rgba(127,127,127,.12); color: #666; }
+.concept-chip-badge-plus {
+  margin-left: 2px;
+  font-size: 9px;
+  opacity: .85;
+  color: #ba6bd4;
+  font-weight: 500;
+}
+.concept-chip-sm { padding: 2px 8px; font-size: 11px; }
+
+/* 不同召回路径的边框/底色 */
+.concept-chip-alias {
+  border-color: rgba(48,127,226,.25);
+  background: rgba(48,127,226,.05);
+}
+.concept-chip-embedding {
+  border-color: rgba(186,107,212,.35);
+  background: rgba(186,107,212,.07);
+}
+.concept-chip-definition {
+  border-color: rgba(160,160,160,.25);
+  background: rgba(160,160,160,.05);
+}
+
+/* ── 右侧详情：命中此报送项的概念列表 ───────────────────── */
+.active-concepts {
+  background: rgba(48,127,226,.04);
+  border-left: 3px solid rgba(48,127,226,.35);
+  padding: 10px 12px;
+  border-radius: 4px;
+  margin: 4px 0 16px;
+}
+.active-concepts-title {
+  font-size: 12px;
+  color: var(--ink-700, #444);
+  font-weight: 600;
+  margin: 0 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.active-concepts-count {
+  font-size: 10px;
+  color: var(--ink-400, #aaa);
+  font-weight: 400;
+}
+.active-concepts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.active-concept-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.active-concept-meta {
+  font-size: 10px;
+  color: var(--ink-400, #999);
+  font-family: monospace;
+  display: flex;
+  gap: 8px;
+}
+.active-concept-code { color: var(--ink-500); }
+.active-concept-via { color: var(--ink-400); }
+</style>

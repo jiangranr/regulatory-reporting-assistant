@@ -460,6 +460,10 @@ class ConceptMatchHit(BaseModel):
     match_offset: int
     match_length: int
     related_reporting_item_codes: list[str] = []
+    # 该概念通过哪些召回路径命中（alias/definition/embedding）；
+    # 前端据此渲染路径徽章，让业务方区分"字面命中"与"AI 语义推断"
+    paths: list[str] = []
+    score: float = 0.0
 
 
 class ConceptMatchResponse(BaseModel):
