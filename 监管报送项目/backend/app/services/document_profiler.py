@@ -45,7 +45,11 @@ class Document1104ProfileDraft(BaseModel):
     raw_response: str = ""
 
 
-def generate_document_profile(document: RegDocument, context: dict) -> Document1104ProfileDraft:
+def generate_document_profile(
+    document: RegDocument,
+    context: dict,
+    session=None,
+) -> Document1104ProfileDraft:
     """
     阶段一：基于数据库维护的报表本体做轻量预扫（无LLM）。
     未命中 Gxx 表号或报表名称 → 直接返回 SKIP，不调用LLM。
@@ -94,6 +98,10 @@ def generate_document_profile(document: RegDocument, context: dict) -> Document1
     # 原文核验：检查 evidence_text 是否真实存在于文档中，防止幻觉
     doc_text_normalized = re.sub(r"\s+", "", document.parsed_text or "")
     change_signals = [_ground_signal(s, doc_text_normalized) for s in change_signals]
+    # 补落格：LLM 抽 signal 通常不填 matched_item_code，用 item_resolver 字面匹配补上
+    # 详见 docs/concept-and-ticket-reuse-design.md 补丁 / item_resolver.py
+    if session is not None:
+        change_signals = _resolve_missing_item_codes(change_signals, session)
     signal_codes = sorted({s.table_code for s in change_signals if s.table_code})
     affected_codes = sorted(set(regex_codes).union(signal_codes))
     in_scope = sorted(c for c in set(in_scope).union(signal_codes) if c in catalog_codes)
@@ -229,6 +237,9 @@ def _parse_change_signals(result: dict) -> list[TableChangeSignal]:
         change_type = str(item.get("change_type", "UNCLEAR")).strip().upper()
         if change_type not in _VALID_CHANGE_TYPES:
             change_type = "UNCLEAR"
+        evidence_text = str(item.get("evidence_text", "")).strip()
+        indicator_hint = str(item.get("indicator_hint", "")).strip()
+        change_type = _normalize_revision_marker_change_type(change_type, evidence_text, indicator_hint)
         try:
             confidence = min(max(float(item.get("confidence", 0.7)), 0.0), 1.0)
         except (TypeError, ValueError):
@@ -237,9 +248,9 @@ def _parse_change_signals(result: dict) -> list[TableChangeSignal]:
             TableChangeSignal(
                 table_code=str(item.get("table_code", "")).strip().upper(),
                 section_hint=str(item.get("section_hint", "")).strip(),
-                indicator_hint=str(item.get("indicator_hint", "")).strip(),
+                indicator_hint=indicator_hint,
                 change_type=change_type,
-                evidence_text=str(item.get("evidence_text", "")).strip(),
+                evidence_text=evidence_text,
                 confidence=confidence,
                 matched_item_code=str(item.get("matched_item_code", "")).strip(),
                 match_status=str(item.get("match_status", "")).strip(),
@@ -247,6 +258,28 @@ def _parse_change_signals(result: dict) -> list[TableChangeSignal]:
             )
         )
     return signals
+
+
+def _normalize_revision_marker_change_type(change_type: str, evidence_text: str, indicator_hint: str = "") -> str:
+    """Word 修订追踪标记比 LLM 类型判断更可靠。
+
+    parsed_document_from_pair 会把插入/删除修订格式化成：
+    - [新增 | 作者 | 日期] 文本
+    - [删除 | 作者 | 日期] 文本
+    这里的“新增/删除”只是 Word 修订动作，不等于业务上的指标新增/删除。
+    因此要看修订正文是否明确出现新增列/字段/指标等业务新增词。
+    """
+    if change_type not in {"INSTRUCTION_ADJUST", "UNCLEAR"}:
+        return change_type
+    body = re.sub(r"-?\s*\[\s*(?:新增|删除)\s*\|[^\]]+\]\s*", "", evidence_text).strip()
+    business_text = f"{indicator_hint} {body}"
+    if re.search(r"\[\s*新增\s*\|", evidence_text) and re.search(r"新增\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)", body):
+        return "ADD"
+    if re.search(r"\[\s*删除\s*\|", evidence_text) and re.search(r"(?:删除|停报)\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)", body):
+        return "DELETE"
+    if re.search(r"(定义|公式|计算|口径|范围|填报|统计)", business_text):
+        return "SCOPE_ADJUST"
+    return change_type
 
 
 def _ground_signal(signal: TableChangeSignal, doc_normalized: str) -> TableChangeSignal:
@@ -280,6 +313,59 @@ def _ground_signal(signal: TableChangeSignal, doc_normalized: str) -> TableChang
         match_status=signal.match_status,
         composite_match=signal.composite_match,
     )
+
+
+def _resolve_missing_item_codes(
+    signals: list[TableChangeSignal], session
+) -> list[TableChangeSignal]:
+    """补落格：对 matched_item_code 为空的 signal，用 item_resolver 字面匹配补一次。
+
+    设计原则：
+    - 只填空，不覆盖：上游 Excel diff / scanner 已经填好的不动
+    - 失败静默：resolver 任何异常都退回原 signal，不阻塞主流程
+    - 命中后写两路：
+        FUZZY_PRECISE → signal.matched_item_code + match_status
+        FUZZY_LANE    → signal.composite_match.reporting_item_codes + match_status
+    """
+    from app.services.item_resolver import ReportingItemResolver
+
+    try:
+        resolver = ReportingItemResolver(session)
+    except Exception:
+        return signals
+
+    out: list[TableChangeSignal] = []
+    for signal in signals:
+        if signal.matched_item_code or (
+            signal.composite_match
+            and signal.composite_match.get("reporting_item_codes")
+        ):
+            out.append(signal)
+            continue
+        if not signal.table_code or not signal.indicator_hint:
+            out.append(signal)
+            continue
+        try:
+            r = resolver.resolve(signal.table_code, signal.indicator_hint)
+        except Exception:
+            out.append(signal)
+            continue
+        if r.match_status == "UNRESOLVED":
+            out.append(signal)
+            continue
+        new_signal = signal.model_copy()
+        if r.match_status == "FUZZY_PRECISE" and r.matched_item_code:
+            new_signal.matched_item_code = r.matched_item_code
+            new_signal.match_status = "FUZZY_PRECISE"
+        elif r.match_status == "FUZZY_LANE" and r.item_codes:
+            cm = dict(new_signal.composite_match or {})
+            cm["reporting_item_codes"] = r.item_codes
+            cm["resolver_paths"] = r.paths
+            cm["resolver_confidence"] = r.confidence
+            new_signal.composite_match = cm
+            new_signal.match_status = "FUZZY_LANE"
+        out.append(new_signal)
+    return out
 
 
 def _derive_route(

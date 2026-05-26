@@ -7,7 +7,7 @@ from app.services import document_profiler
 def test_profile_document_uses_reporting_context_and_persists_profile(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_generate_profile(document, context):
+    def fake_generate_profile(document, context, session=None, **_kw):
         captured["document_title"] = document.title
         captured["object_names"] = [item["object_name"] for item in context["reporting_objects"]]
         captured["section_names"] = [item["section_name"] for item in context["reporting_sections"]]

@@ -552,7 +552,9 @@ def profile_document(document_id: int, session: Session = Depends(get_session)) 
     if draft is None:
         try:
             draft = document_profiler.generate_document_profile(
-                _normalize_document(document), _load_profile_context(session)
+                _normalize_document(document),
+                _load_profile_context(session),
+                session=session,  # 传 session 让 profiler 用 item_resolver 补落格
             )
         except LLMClientError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
