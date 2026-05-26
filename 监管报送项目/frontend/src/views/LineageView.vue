@@ -610,8 +610,16 @@ const fieldMappings = computed(() => {
 
     if (keywords.length) {
       // 归一化：去掉 -·_空格，再做包含匹配
+      // **关键过滤**：indicatorMatchKeywords 用 raw.length>1 过滤，但 cleanBusinessLabel
+      // 可能把纯数字片段（如 "1.8.2"）整段 strip 成空串。空串作为 includes() 参数永远返回 true，
+      // 会让所有 field_mapping 被误算成"命中"。所以归一化后必须再做一次非空过滤。
       const norm = normaliseForMatch;
-      const normKws = keywords.map(norm);
+      const normKws = keywords.map(norm).filter((kw) => kw.length >= 2);
+      if (!normKws.length) {
+        // 全部 keyword 归一化后为空（典型场景：indicator_hint 只是数字编号如 "1.8.1/1.8.2"），
+        // 没有可靠的字面信号 → 不展示 field mapping（避免误显示全表）
+        return [];
+      }
       const filtered = byTable.filter((m) =>
         normKws.some(
           (kw) =>
