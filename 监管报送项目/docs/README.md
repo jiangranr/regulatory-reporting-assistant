@@ -27,6 +27,7 @@
 | [regulatory-workflow-implementation.md](regulatory-workflow-implementation.md) | 项目**主线设计**。从"监管报送变更"到"报送项 / 指标口径 / 数据血缘 / 工单沉淀"的通用影响分析框架 | 2026-05-18 |
 | [regulatory-report-lineage-impact-design.md](regulatory-report-lineage-impact-design.md) | 通用血缘影响分析方法："监管对象定位 → 指标口径 → 血缘映射 → 影响分析 → 工单沉淀" | 2026-05-18 |
 | [rule-card-and-concept-kb-design.md](rule-card-and-concept-kb-design.md) | 在 22 张表基础上新增"规则卡片 + 概念知识库"两层资产。一期落脚点 G31 | 2026-05-21 |
+| [concept-and-ticket-reuse-design.md](concept-and-ticket-reuse-design.md) | **基于代码现状的修订**：概念库与工单复用设计，6 个补丁实现 L3+L5 层复用 | 2026-05-26 |
 | [field-level-revision-table-redesign.md](field-level-revision-table-redesign.md) | 字段级修订对照表方案 v2 —— 独立的、长期沉淀的监管制度变更知识库 | 2026-05-24 |
 | [frontend-component-map.md](frontend-component-map.md) | Vue 3 + Vite + TS 前端的页面、流程页和 API 契约主线 | 2026-05-14 |
 | [innovation-demo-todo.md](innovation-demo-todo.md) | 银行创新奖一期 demo 的关键缺口与改进任务（按"看懂 / 相信 / 记住"三件事评估） | 2026-05-20 |
