@@ -146,6 +146,13 @@
               </div>
             </div>
           </div>
+          <div v-else-if="activeItemNotPinpointed" class="active-concepts active-concepts-empty">
+            <span class="active-concepts-empty-icon">ⓘ</span>
+            <span>
+              本条变更未精确落格到具体报送项，仅有表级提示。
+              <span class="active-concepts-empty-hint">文档整体命中的概念见顶部横幅。</span>
+            </span>
+          </div>
 
           <!-- 变更证据 -->
           <h4 style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--ink-500);font-weight:600;margin:8px 0 10px;">变更证据</h4>
@@ -400,33 +407,57 @@ function pathLabel(hit: ConceptMatchHit): string {
 }
 
 /**
- * 反查"哪些概念辐射到了当前 activeSignal 对应的报送项"。
- * 优先级：matched_item_code → composite_match.reporting_item_codes → table_code 兜底
+ * 反查"哪些概念辐射到了当前 activeSignal"。
+ *
+ * 三档策略（2026-05-26 修订）：
+ *   档 1 精确 item_code 匹配：最强信号
+ *   档 2 indicator_hint 与概念名称/别名的字面 fuzzy 匹配：当 LLM 没落格 item_code 时的兜底
+ *   档 3 都不命中 → 返回空，UI 用提示语兜底
+ *
+ * 不再做"同 table_code 前缀全捞"——那会把同表其他行无关概念误算到本条上
+ * （之前的 bug：选中"买入返售"行时把"同业融入余额/最大百家"也带进来）。
+ * 顶部横幅已展示文档级所有命中概念，per-row 区块只承担"本条相关"职责。
  */
 const conceptsHittingActiveItem = computed<ConceptMatchHit[]>(() => {
   const signal = activeSignal.value;
   if (!signal || !props.conceptHits?.length) return [];
 
-  // 收集当前 signal 涉及的 item_code 集合
+  // 档 1：精确 item_code 匹配
   const targetCodes = new Set<string>();
   if (signal.matched_item_code) targetCodes.add(signal.matched_item_code);
   const composite = signal.composite_match;
   if (composite?.reporting_item_codes) {
     for (const c of composite.reporting_item_codes) targetCodes.add(c);
   }
+  if (targetCodes.size > 0) {
+    const exact = props.conceptHits.filter((h) =>
+      h.related_reporting_item_codes.some((c) => targetCodes.has(c)),
+    );
+    if (exact.length) return exact;
+  }
 
-  // 精确匹配优先
-  const exact = props.conceptHits.filter((h) =>
-    h.related_reporting_item_codes.some((c) => targetCodes.has(c)),
-  );
-  if (exact.length) return exact;
+  // 档 2：fuzzy by signal.indicator_hint ↔ concept name/alias 名称匹配
+  const hint = (signal.indicator_hint || "").trim();
+  if (!hint) return [];
+  const hintNorm = hint.replace(/[\s·_\-/×]/g, "");
+  if (hintNorm.length < 2) return [];
+  const fuzzy = props.conceptHits.filter((h) => {
+    const candidates = [h.canonical_name, h.matched_alias].filter(Boolean);
+    return candidates.some((name) => {
+      const norm = (name || "").replace(/[\s·_\-/×]/g, "");
+      if (!norm) return false;
+      // 双向包含：hint 包含 concept 名 / concept 名包含 hint 关键片段
+      return hintNorm.includes(norm) || norm.includes(hintNorm);
+    });
+  });
+  return fuzzy;
+});
 
-  // 兜底：同 table_code 前缀的辐射
-  const tableCode = signal.table_code;
-  if (!tableCode) return [];
-  return props.conceptHits.filter((h) =>
-    h.related_reporting_item_codes.some((c) => c.startsWith(`${tableCode}.`)),
-  );
+/** 当 activeSignal 存在但精确档和 fuzzy 档都未命中时，给出友好提示 */
+const activeItemNotPinpointed = computed<boolean>(() => {
+  const signal = activeSignal.value;
+  if (!signal || !props.conceptHits?.length) return false;
+  return conceptsHittingActiveItem.value.length === 0;
 });
 
 /** 点击顶部 chip 时，跳转到该概念辐射的首个报送项 */
@@ -1017,4 +1048,16 @@ const lineageRoleLabel = (r: string): string =>
 }
 .active-concept-code { color: var(--ink-500); }
 .active-concept-via { color: var(--ink-400); }
+
+.active-concepts-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: rgba(160,160,160,.04);
+  border-left-color: rgba(160,160,160,.25);
+  color: var(--ink-500, #888);
+  font-size: 12px;
+}
+.active-concepts-empty-icon { color: var(--ink-400, #aaa); }
+.active-concepts-empty-hint { color: var(--ink-400, #aaa); }
 </style>
