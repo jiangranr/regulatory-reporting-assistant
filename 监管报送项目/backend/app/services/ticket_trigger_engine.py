@@ -61,9 +61,10 @@ def build_ticket_triggers(
             related_impact_codes=impact_codes,
         ))
 
-    if _mentions_validation(text) or _is_cross_report(impact_codes):
+    is_cross_report_consistency = _is_cross_report(impact_codes) or _mentions_cross_table_consistency(text)
+    if _mentions_validation(text) or is_cross_report_consistency:
         reasons = ["VALIDATION_RULE_IMPACT"]
-        if _is_cross_report(impact_codes):
+        if is_cross_report_consistency:
             reasons.append("CROSS_REPORT_CONSISTENCY")
         candidates.append(TicketTrigger(
             action_type=ActionTicketType.VALIDATION_RULE,
@@ -119,6 +120,10 @@ def _mentions_processing(text: str) -> bool:
 
 def _mentions_validation(text: str) -> bool:
     return any(keyword in text for keyword in ("校验", "勾稽", "一致性", "差异超过", "表内", "表间"))
+
+
+def _mentions_cross_table_consistency(text: str) -> bool:
+    return any(keyword in text for keyword in ("跨表一致性", "表间一致性", "跨表校验", "表间校验"))
 
 
 def _mentions_retroactive(text: str) -> bool:

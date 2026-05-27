@@ -53,3 +53,17 @@ def test_validation_trigger_for_cross_table_consistency_text():
         and "CROSS_REPORT_CONSISTENCY" in trigger.trigger_reasons
         for trigger in triggers
     )
+
+
+def test_validation_trigger_for_cross_table_consistency_text_with_single_report_code():
+    triggers = build_ticket_triggers(
+        [impact(reporting_item_code="G31.PART_I.B")],
+        document_text="表间一致性校验，差异超过 5% 须解释。",
+    )
+
+    assert any(
+        trigger.action_type == ActionTicketType.VALIDATION_RULE
+        and trigger.responsible_system == ResponsibleSystem.DATA_QUALITY_PLATFORM
+        and "CROSS_REPORT_CONSISTENCY" in trigger.trigger_reasons
+        for trigger in triggers
+    )
