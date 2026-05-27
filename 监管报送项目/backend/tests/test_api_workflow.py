@@ -12,7 +12,7 @@ def test_document_to_ticket_workflow():
         files={
             "file": (
                 "g24_notice.txt",
-                "监管要求调整G24最大百家金融机构同业融入情况表中同业融入余额统计口径，需复核交易对手金融机构识别和余额来源。".encode(
+                "监管要求调整G24最大百家金融机构同业融入情况表中同业融入余额统计口径，需复核交易对手金融机构识别和余额来源，并追溯重算历史数据，同步调整内部数据加工逻辑与跨表一致性校验。".encode(
                     "utf-8"
                 ),
                 "text/plain",
@@ -35,9 +35,17 @@ def test_document_to_ticket_workflow():
 
     ticket_response = client.post(f"/api/tasks/{task_id}/generate-ticket")
     assert ticket_response.status_code == 200
-    parent_content = ticket_response.json()["parent"]["content"]
+    ticket_payload = ticket_response.json()
+    parent_content = ticket_payload["parent"]["content"]
     assert "母单类型" in parent_content
     assert "G24.MAIN.INTERBANK_BORROWING_BAL_TOP100" in parent_content
+    child = ticket_payload["children"][0]
+    assert child["content"]
+    assert child["summary"]
+    assert child["responsible_system"]
+    assert child["must_do"] != "[]"
+    assert child["acceptance_criteria_structured"] != "[]"
+    assert child["quality_score"] > 0
 
     workflow_response = client.get(f"/api/tasks/{task_id}/workflow")
     assert workflow_response.status_code == 200
