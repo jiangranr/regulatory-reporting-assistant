@@ -85,18 +85,19 @@ def build_ticket_triggers(
             related_impact_codes=impact_codes,
         ))
 
-    candidates.append(TicketTrigger(
-        action_type=ActionTicketType.TEST_ACCEPTANCE,
-        responsible_system=ResponsibleSystem.TEST_ACCEPTANCE,
-        trigger_reasons=["REGRESSION_ACCEPTANCE_REQUIRED"],
-        related_impact_codes=impact_codes,
-    ))
-    candidates.append(TicketTrigger(
-        action_type=ActionTicketType.ARCHIVE_REVIEW,
-        responsible_system=ResponsibleSystem.KNOWLEDGE_ARCHIVE,
-        trigger_reasons=["GOVERNANCE_ARCHIVE_REQUIRED"],
-        related_impact_codes=impact_codes,
-    ))
+    if candidates:
+        candidates.append(TicketTrigger(
+            action_type=ActionTicketType.TEST_ACCEPTANCE,
+            responsible_system=ResponsibleSystem.TEST_ACCEPTANCE,
+            trigger_reasons=["REGRESSION_ACCEPTANCE_REQUIRED"],
+            related_impact_codes=impact_codes,
+        ))
+        candidates.append(TicketTrigger(
+            action_type=ActionTicketType.ARCHIVE_REVIEW,
+            responsible_system=ResponsibleSystem.KNOWLEDGE_ARCHIVE,
+            trigger_reasons=["GOVERNANCE_ARCHIVE_REQUIRED"],
+            related_impact_codes=impact_codes,
+        ))
 
     return _deduplicate_triggers(candidates)
 
