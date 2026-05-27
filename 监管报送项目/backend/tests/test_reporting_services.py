@@ -1,6 +1,9 @@
+from app.models.enums import ChangeTicketType, SeverityLevel
+from app.services.change_severity_classifier import ChangeClassification, SeverityScore
 from app.services.reporting_change_extractor import extract_reporting_changes, signals_to_changes
 from app.services.reporting_impact_analyzer import analyze_reporting_impacts
 from app.services.reporting_seed import build_1104_seed_catalog
+from app.services.reporting_ticket_generator import build_ticket_plan
 
 
 def test_1104_seed_contains_funds_interbank_reporting_items_and_lineage():
@@ -116,3 +119,38 @@ def test_scope_change_outputs_ticket_scope_and_required_subtickets():
     ]
     assert "DATA_MAPPING" in impact.conditional_sub_ticket_types
     assert impact.sub_ticket_triggers["DATA_MAPPING"] == "NEW_DIMENSION_OR_FILTER_FIELD"
+
+
+def test_build_ticket_plan_outputs_structured_ticket_cards():
+    catalog = build_1104_seed_catalog()
+    changes = extract_reporting_changes(
+        "调整G24同业融入余额统计口径，并同步调整内部数据加工逻辑与跨表一致性校验。"
+    )
+    impacts = analyze_reporting_impacts(changes, catalog)
+    classification = ChangeClassification(
+        change_ticket_type=ChangeTicketType.SCOPE_ADJUSTMENT,
+        severity=SeverityScore(
+            level=SeverityLevel.L3_STANDARD,
+            score=8,
+            triggered_signals=["test"],
+        ),
+    )
+
+    plan = build_ticket_plan(
+        classification,
+        impacts,
+        "G24 口径调整",
+        document_text="同步调整内部数据加工逻辑与跨表一致性校验",
+    )
+
+    assert plan.children
+    assert any(
+        child.card.responsible_system.value == "DATA_GOVERNANCE_PLATFORM"
+        for child in plan.children
+        if child.card
+    )
+    assert all(child.card and child.card.summary for child in plan.children)
+    assert all(child.card and child.card.must_do for child in plan.children)
+    assert all(
+        child.quality and child.quality.score > 0 for child in plan.children
+    )

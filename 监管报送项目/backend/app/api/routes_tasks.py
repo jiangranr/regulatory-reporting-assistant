@@ -240,8 +240,17 @@ def generate_task_ticket(task_id: int, session: Session = Depends(get_session)) 
         existing_report_codes=existing_report_codes,
     )
     rule_cards_by_key = _build_rule_cards_lookup(impact_drafts, session)
+    # historical_cases 现阶段是 stub（W2 后改为真实决策档案查询）
+    from app.services.decision_archive_service import search_similar_decisions
+
+    historical_cases_by_key = search_similar_decisions(impact_drafts)
     plan = build_ticket_plan(
-        classification, impact_drafts, task.title, rule_cards_by_key=rule_cards_by_key
+        classification,
+        impact_drafts,
+        task.title,
+        rule_cards_by_key=rule_cards_by_key,
+        historical_cases_by_key=historical_cases_by_key,
+        document_text=document_text,
     )
 
     # 清掉旧的工单草稿，重新落本次生成的母子单
@@ -302,6 +311,18 @@ def _persist_child_ticket(
     child: ChildTicketPlan,
     session: Session,
 ) -> TicketDraft:
+    """落库子单。
+
+    Task 4 升级：子单可能携带结构化任务卡 (child.card) + 质量评分 (child.quality)，
+    把它们 JSON 序列化进 TicketDraft 新增字段；旧的 content Markdown 同步落库
+    作为兼容回退视图，前端结构化字段优先、为空时回退 content。
+    """
+    card = child.card
+    quality = child.quality
+
+    has_card = card is not None
+    has_quality = quality is not None
+
     row = TicketDraft(
         task_id=task_id,
         title=child.title,
@@ -318,6 +339,44 @@ def _persist_child_ticket(
         business_signoff_required=child.spec.business_signoff_required,
         closure_review_required=False,
         related_impact_codes=json.dumps(child.related_impact_codes, ensure_ascii=False),
+        # 结构化任务卡字段（仅触发器路径有，固定矩阵/L1 兜底分支留空字符串保持向后兼容）
+        summary=card.summary if has_card else "",
+        responsible_system=card.responsible_system.value if has_card else "",
+        affected_systems=(
+            json.dumps([card.responsible_system.value], ensure_ascii=False)
+            if has_card
+            else "[]"
+        ),
+        affected_assets=(
+            json.dumps(card.affected_assets, ensure_ascii=False) if has_card else "{}"
+        ),
+        must_do=(
+            json.dumps(card.must_do, ensure_ascii=False) if has_card else "[]"
+        ),
+        must_confirm=(
+            json.dumps(card.must_confirm, ensure_ascii=False) if has_card else "[]"
+        ),
+        output_artifacts=(
+            json.dumps(card.output_artifacts, ensure_ascii=False) if has_card else "[]"
+        ),
+        acceptance_criteria_structured=(
+            json.dumps(card.acceptance_criteria, ensure_ascii=False)
+            if has_card
+            else "[]"
+        ),
+        blockers=(
+            json.dumps(card.blockers, ensure_ascii=False) if has_card else "[]"
+        ),
+        evidence_refs=(
+            json.dumps(card.evidence_refs, ensure_ascii=False) if has_card else "[]"
+        ),
+        historical_cases=(
+            json.dumps(card.historical_cases, ensure_ascii=False) if has_card else "[]"
+        ),
+        quality_score=quality.score if has_quality else 0,
+        quality_flags=(
+            json.dumps(quality.flags, ensure_ascii=False) if has_quality else "[]"
+        ),
         status="DRAFT",
     )
     session.add(row)

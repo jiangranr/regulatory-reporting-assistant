@@ -20,6 +20,18 @@ from app.services.change_severity_classifier import (
     SeverityScore,
 )
 from app.services.reporting_impact_analyzer import ReportingImpactDraft
+from app.services.ticket_card_builder import (
+    TicketTaskCard,
+    build_ticket_card,
+)
+from app.services.ticket_quality_checker import (
+    TicketQualityResult,
+    check_ticket_card_quality,
+)
+from app.services.ticket_trigger_engine import (
+    TicketTrigger,
+    build_ticket_triggers,
+)
 
 
 # ----------------- 子单规格 -----------------
@@ -293,6 +305,11 @@ class ChildTicketPlan:
     spec: ActionTicketSpec
     content_markdown: str
     related_impact_codes: list[str] = field(default_factory=list)
+    # Task 4 升级：触发器路径会同时挂结构化任务卡 + 质量评分。
+    # 旧矩阵分支（L1 兜底、新流程没命中时）仍走 Markdown，card/quality 保持 None，
+    # 以兼容前端按结构化字段优先、否则回退 Markdown 的渲染策略。
+    card: TicketTaskCard | None = None
+    quality: TicketQualityResult | None = None
 
 
 @dataclass
@@ -319,15 +336,21 @@ def build_ticket_plan(
     impacts: list[ReportingImpactDraft],
     task_title: str,
     rule_cards_by_key: dict[str, list[dict]] | None = None,
+    historical_cases_by_key: dict[str, list[dict]] | None = None,
+    document_text: str = "",
 ) -> TicketPlan:
     """生成母子单计划。
 
-    rule_cards_by_key: 可选的"报送项 / 报表对象 → 规则卡片"映射。
-        Key 形如 'G31.PART_I.BOND_INVESTMENT_BALANCE'(指标级)或 'G31'(对象级)。
-        Value 是 RuleCardRead.model_dump() 的列表。
-        渲染时按子单影响项查表并去重,挂到工单 Markdown 底部。
+    Task 4 升级：非 L1 分支优先用触发器引擎决定子单集合，旧的"母单类型 + 等级"
+    固定矩阵 (_EXPANSION_MATRIX) 作为触发器空返回时的兜底，保持向后兼容。
+
+    参数：
+      rule_cards_by_key: "报送项/报表对象 → 规则卡片" 映射，挂到工单 Markdown 底部。
+      historical_cases_by_key: "reporting_item_code → 历史相似决策" 映射（W2 后真实化）。
+      document_text: 原文摘录，用于触发器识别"加工/校验/跨表/追溯"等文本信号。
     """
     rule_cards_by_key = rule_cards_by_key or {}
+    historical_cases_by_key = historical_cases_by_key or {}
     parent_title = (
         f"{task_title}｜{_change_type_label(classification.change_ticket_type)}"
         f"（{classification.severity.level.value}）"
@@ -344,13 +367,28 @@ def build_ticket_plan(
             _build_merged_lightweight_child(task_title, impacts, rule_cards_by_key)
         ]
     else:
-        action_types = _select_action_types(
-            classification.change_ticket_type, classification.severity.level
-        )
-        children = [
-            _build_child_plan(action_type, task_title, impacts, rule_cards_by_key)
-            for action_type in action_types
-        ]
+        triggers = build_ticket_triggers(impacts, document_text=document_text)
+        if triggers:
+            children = [
+                _build_child_plan_from_trigger(
+                    trigger,
+                    task_title,
+                    impacts,
+                    rule_cards_by_key,
+                    historical_cases_by_key,
+                )
+                for trigger in triggers
+            ]
+        else:
+            # 兜底：触发器全部未命中（例如纯文档级变更、没有任何影响项），
+            # 退回固定矩阵保证旧契约。这条分支也保留 Markdown 内容，前端可正常渲染。
+            action_types = _select_action_types(
+                classification.change_ticket_type, classification.severity.level
+            )
+            children = [
+                _build_child_plan(action_type, task_title, impacts, rule_cards_by_key)
+                for action_type in action_types
+            ]
 
     return TicketPlan(parent=parent, children=children)
 
@@ -381,6 +419,7 @@ def _build_child_plan(
     impacts: list[ReportingImpactDraft],
     rule_cards_by_key: dict[str, list[dict]] | None = None,
 ) -> ChildTicketPlan:
+    """旧路径：固定矩阵展开，保留作为触发器空返回时的兜底。"""
     spec = _ACTION_SPECS[action_type]
     return ChildTicketPlan(
         action_type=action_type,
@@ -389,6 +428,154 @@ def _build_child_plan(
         content_markdown=_render_child_markdown(spec, impacts, rule_cards_by_key or {}),
         related_impact_codes=[i.reporting_item_code for i in impacts if i.reporting_item_code],
     )
+
+
+def _build_child_plan_from_trigger(
+    trigger: TicketTrigger,
+    task_title: str,
+    impacts: list[ReportingImpactDraft],
+    rule_cards_by_key: dict[str, list[dict]] | None = None,
+    historical_cases_by_key: dict[str, list[dict]] | None = None,
+) -> ChildTicketPlan:
+    """新路径：触发器 → 结构化任务卡 + 质量评分 + 短模板 Markdown。
+
+    historical_cases_by_key 在 W2 之前是 stub（全部空），结构上预留。
+    """
+    spec = _ACTION_SPECS[trigger.action_type]
+    related_impacts = [
+        impact
+        for impact in impacts
+        if not trigger.related_impact_codes
+        or impact.reporting_item_code in trigger.related_impact_codes
+    ]
+    historical_cases = _historical_cases_for_impacts(
+        related_impacts, historical_cases_by_key or {}
+    )
+    card = build_ticket_card(trigger, related_impacts, historical_cases=historical_cases)
+    quality = check_ticket_card_quality(card)
+    return ChildTicketPlan(
+        action_type=trigger.action_type,
+        title=f"{task_title}｜{spec.name_zh}",
+        spec=spec,
+        content_markdown=_render_card_markdown(card, rule_cards_by_key or {}),
+        related_impact_codes=list(trigger.related_impact_codes),
+        card=card,
+        quality=quality,
+    )
+
+
+def _historical_cases_for_impacts(
+    impacts: list[ReportingImpactDraft],
+    historical_cases_by_key: dict[str, list[dict]],
+) -> list[dict]:
+    """聚合本工单所有 impact 的历史相似决策案例，去重并裁顶 3 条。"""
+    seen: set[str] = set()
+    cases: list[dict] = []
+    for impact in impacts:
+        for case in historical_cases_by_key.get(impact.reporting_item_code, []):
+            key = str(case.get("ticket_id") or case.get("id") or id(case))
+            if key in seen:
+                continue
+            seen.add(key)
+            cases.append(case)
+            if len(cases) >= 3:
+                return cases
+    return cases
+
+
+def _render_card_markdown(
+    card: TicketTaskCard,
+    rule_cards_by_key: dict[str, list[dict]],
+) -> str:
+    """把结构化任务卡渲染成短 Markdown，作为前端结构化字段的兜底回退视图。
+
+    设计原则（对照 P0 验收标准）：
+      - 默认只展示 5 个核心区块：摘要 / 责任 / 资产 / 必须动作 / 验收
+      - 待确认、阻塞、产出资产、规则卡片只在非空时输出
+      - 规则卡片正文不再塞进每个子单 Markdown，只展示数量与入口指示
+    """
+    lines: list[str] = [
+        "## 工单摘要",
+        "",
+        card.summary,
+        "",
+        "## 责任分配",
+        "",
+        f"- 责任系统：{card.responsible_system.value}",
+        f"- 出口责任 (A)：{card.owner_role.value}",
+        f"- 执行人 (R)：{card.executor_role.value}",
+        "",
+        "## 受影响资产",
+        "",
+    ]
+    asset_lines = [
+        f"- {key}：{', '.join(values[:5])}"
+        for key, values in card.affected_assets.items()
+        if values
+    ]
+    if asset_lines:
+        lines.extend(asset_lines)
+    else:
+        lines.append("- （未识别到具体资产，详见原文证据）")
+
+    if card.must_do:
+        lines.extend(["", "## 必须动作", ""])
+        lines.extend(f"- {item}" for item in card.must_do)
+
+    if card.must_confirm:
+        lines.extend(["", "## 待确认问题", ""])
+        lines.extend(f"- {item}" for item in card.must_confirm)
+
+    if card.acceptance_criteria:
+        lines.extend(["", "## 验收标准", ""])
+        lines.extend(f"- {item}" for item in card.acceptance_criteria)
+
+    if card.blockers:
+        lines.extend(["", "## 阻塞点", ""])
+        lines.extend(f"- {item}" for item in card.blockers)
+
+    if card.output_artifacts:
+        lines.extend(["", "## 治理资产产出", ""])
+        lines.extend(f"- {item}" for item in card.output_artifacts)
+
+    # 规则卡片：只挂"入口提示"，详情留给前端折叠抽屉
+    related_card_codes = _collect_related_rule_card_codes(card, rule_cards_by_key)
+    if related_card_codes:
+        lines.extend(["", "## 参考规则卡片", ""])
+        lines.append(
+            f"- 共 {len(related_card_codes)} 张可参考卡片："
+            f"{', '.join(related_card_codes[:5])}"
+            + ("…" if len(related_card_codes) > 5 else "")
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def _collect_related_rule_card_codes(
+    card: TicketTaskCard,
+    rule_cards_by_key: dict[str, list[dict]],
+) -> list[str]:
+    """从 affected_assets 反查关联的规则卡片代码（去重，保序）。"""
+    if not rule_cards_by_key:
+        return []
+    keys: list[str] = []
+    for values in card.affected_assets.values():
+        for value in values:
+            if not value:
+                continue
+            keys.append(value)
+            if "." in value:
+                keys.append(value.split(".")[0])
+    seen: set[str] = set()
+    codes: list[str] = []
+    for key in keys:
+        for rule_card in rule_cards_by_key.get(key, []):
+            code = rule_card.get("card_code")
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            codes.append(code)
+    return codes
 
 
 def _build_merged_lightweight_child(
