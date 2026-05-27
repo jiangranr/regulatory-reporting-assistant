@@ -331,6 +331,19 @@ class TicketDraft(SQLModel, table=True):
     business_signoff_required: bool = False
     closure_review_required: bool = False
     related_impact_codes: str = Field(default="[]", sa_column=Column(Text))
+    summary: str = Field(default="", sa_column=Column(Text))
+    responsible_system: str = Field(default="", max_length=80)
+    affected_systems: str = Field(default="[]", sa_column=Column(Text))
+    affected_assets: str = Field(default="{}", sa_column=Column(Text))
+    must_do: str = Field(default="[]", sa_column=Column(Text))
+    must_confirm: str = Field(default="[]", sa_column=Column(Text))
+    output_artifacts: str = Field(default="[]", sa_column=Column(Text))
+    acceptance_criteria_structured: str = Field(default="[]", sa_column=Column(Text))
+    blockers: str = Field(default="[]", sa_column=Column(Text))
+    evidence_refs: str = Field(default="[]", sa_column=Column(Text))
+    historical_cases: str = Field(default="[]", sa_column=Column(Text))
+    quality_score: int = 0
+    quality_flags: str = Field(default="[]", sa_column=Column(Text))
     status: str = "DRAFT"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

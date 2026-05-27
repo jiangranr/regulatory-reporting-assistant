@@ -82,6 +82,19 @@ export interface TicketDraft {
   business_signoff_required: boolean;
   closure_review_required: boolean;
   related_impact_codes: string;
+  summary: string;
+  responsible_system: string;
+  affected_systems: string;
+  affected_assets: string;
+  must_do: string;
+  must_confirm: string;
+  output_artifacts: string;
+  acceptance_criteria_structured: string;
+  blockers: string;
+  evidence_refs: string;
+  historical_cases: string;
+  quality_score: number;
+  quality_flags: string;
   status: string;
   created_at: string | null;
 }

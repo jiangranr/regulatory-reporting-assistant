@@ -198,6 +198,19 @@ def _ensure_ticket_draft_columns() -> None:
         ("business_signoff_required", "BOOLEAN DEFAULT 0"),
         ("closure_review_required", "BOOLEAN DEFAULT 0"),
         ("related_impact_codes", "TEXT"),
+        ("summary", "TEXT"),
+        ("responsible_system", "VARCHAR(80) DEFAULT ''"),
+        ("affected_systems", "TEXT"),
+        ("affected_assets", "TEXT"),
+        ("must_do", "TEXT"),
+        ("must_confirm", "TEXT"),
+        ("output_artifacts", "TEXT"),
+        ("acceptance_criteria_structured", "TEXT"),
+        ("blockers", "TEXT"),
+        ("evidence_refs", "TEXT"),
+        ("historical_cases", "TEXT"),
+        ("quality_score", "INTEGER DEFAULT 0"),
+        ("quality_flags", "TEXT"),
         ("status", "VARCHAR(20) DEFAULT 'DRAFT'"),
     ]
     with engine.begin() as connection:
@@ -207,6 +220,25 @@ def _ensure_ticket_draft_columns() -> None:
         # TEXT 列在 MySQL 不支持 ALTER 时直接 DEFAULT，补默认值
         connection.execute(text("UPDATE ticket_drafts SET severity_signals = '[]' WHERE severity_signals IS NULL"))
         connection.execute(text("UPDATE ticket_drafts SET related_impact_codes = '[]' WHERE related_impact_codes IS NULL"))
+        json_defaults = {
+            "affected_systems": "[]",
+            "affected_assets": "{}",
+            "must_do": "[]",
+            "must_confirm": "[]",
+            "output_artifacts": "[]",
+            "acceptance_criteria_structured": "[]",
+            "blockers": "[]",
+            "evidence_refs": "[]",
+            "historical_cases": "[]",
+            "quality_flags": "[]",
+        }
+        for column_name, default_value in json_defaults.items():
+            connection.execute(
+                text(f"UPDATE ticket_drafts SET `{column_name}` = :val WHERE `{column_name}` IS NULL"),
+                {"val": default_value},
+            )
+        connection.execute(text("UPDATE ticket_drafts SET summary = '' WHERE summary IS NULL"))
+        connection.execute(text("UPDATE ticket_drafts SET responsible_system = '' WHERE responsible_system IS NULL"))
 
 
 def _ensure_reg_reporting_change_candidate_columns() -> None:

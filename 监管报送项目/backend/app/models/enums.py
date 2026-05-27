@@ -66,3 +66,13 @@ class ResponsibleRole(StrEnum):
     DATA_QUALITY = "DATA_QUALITY"                     # 数据质量
     QA = "QA"                                         # 测试
     COMPLIANCE = "COMPLIANCE"                         # 合规
+
+
+class ResponsibleSystem(StrEnum):
+    REG_REPORTING_SYSTEM = "REG_REPORTING_SYSTEM"
+    DATA_GOVERNANCE_PLATFORM = "DATA_GOVERNANCE_PLATFORM"
+    DATA_MART_ETL = "DATA_MART_ETL"
+    SOURCE_SYSTEM = "SOURCE_SYSTEM"
+    DATA_QUALITY_PLATFORM = "DATA_QUALITY_PLATFORM"
+    TEST_ACCEPTANCE = "TEST_ACCEPTANCE"
+    KNOWLEDGE_ARCHIVE = "KNOWLEDGE_ARCHIVE"
