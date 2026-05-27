@@ -67,3 +67,38 @@ def test_validation_trigger_for_cross_table_consistency_text_with_single_report_
         and "CROSS_REPORT_CONSISTENCY" in trigger.trigger_reasons
         for trigger in triggers
     )
+
+
+def test_related_impact_codes_are_deduplicated_for_every_trigger():
+    triggers = build_ticket_triggers(
+        [
+            impact(reporting_item_code="G31.PART_I.B"),
+            impact(reporting_item_code="G31.PART_I.B"),
+        ],
+        document_text="",
+    )
+
+    assert triggers
+    assert all(trigger.related_impact_codes == ["G31.PART_I.B"] for trigger in triggers)
+
+
+def test_whitespace_and_malformed_codes_do_not_create_cross_report_reason():
+    triggers = build_ticket_triggers(
+        [
+            impact(reporting_item_code=" G31.PART"),
+            impact(reporting_item_code="G31.PART"),
+            impact(reporting_item_code=".BAD"),
+        ],
+        document_text="校验规则调整。",
+    )
+
+    validation_triggers = [
+        trigger for trigger in triggers
+        if trigger.action_type == ActionTicketType.VALIDATION_RULE
+    ]
+
+    assert validation_triggers
+    assert all(
+        "CROSS_REPORT_CONSISTENCY" not in trigger.trigger_reasons
+        for trigger in validation_triggers
+    )

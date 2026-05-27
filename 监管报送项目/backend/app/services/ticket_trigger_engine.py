@@ -18,7 +18,11 @@ def build_ticket_triggers(
 ) -> list[TicketTrigger]:
     candidates: list[TicketTrigger] = []
 
-    impact_codes = [impact.reporting_item_code for impact in impacts if impact.reporting_item_code]
+    impact_codes = list(dict.fromkeys(
+        impact.reporting_item_code.strip()
+        for impact in impacts
+        if impact.reporting_item_code and impact.reporting_item_code.strip()
+    ))
     roles = {role for impact in impacts for role in impact.impacted_lineage_roles}
     has_source_gap = any(
         impact.reporting_item_code and not impact.impacted_source_fields
@@ -131,5 +135,9 @@ def _mentions_retroactive(text: str) -> bool:
 
 
 def _is_cross_report(impact_codes: list[str]) -> bool:
-    object_codes = {code.split(".")[0] for code in impact_codes if "." in code}
+    object_codes = {
+        code.split(".", 1)[0].strip()
+        for code in impact_codes
+        if "." in code and code.split(".", 1)[0].strip()
+    }
     return len(object_codes) >= 2
