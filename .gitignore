@@ -43,3 +43,4 @@ pnpm-debug.log*
 
 # Claude / 工具
 .claude/settings.local.json
+.worktrees/
