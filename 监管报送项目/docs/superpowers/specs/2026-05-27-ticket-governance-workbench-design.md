@@ -9,7 +9,7 @@
 
 本次改造不把目标定义为“让 AI 写出更长、更完整的工单正文”，而是把工单模块升级为“监管变更落地任务编排与数据治理资产沉淀”。
 
-现有逻辑不推倒重来。保留当前母子单、`ticket_drafts.content`、`generate-ticket` 接口、`workflow` 聚合接口和旧 Markdown 输出作为兼容回退；新增结构化工单字段、触发器驱动拆单、系统责任分组、证据折叠展示、历史相似案例和质量评分。新逻辑采用兼容扩展方式接入，避免破坏已有流程。
+主流程不推倒重来。上传、文档画像、字段定位、影响分析和 `workflow` 聚合保持稳定；工单生成模块可以重构，但必须把触发器、任务卡构建、质量检查、历史案例召回拆成清晰服务，避免继续在单个生成器里堆 Markdown 模板、条件分支和重复内容。保留当前母子单、`ticket_drafts.content`、`generate-ticket` 接口、`workflow` 聚合接口和旧 Markdown 输出作为兼容回退。
 
 ## 2. 背景问题
 
@@ -51,10 +51,12 @@
 - 不破坏当前 `POST /api/tasks/{task_id}/generate-ticket` 调用方式。
 - 不破坏当前 `GET /api/tasks/{task_id}/workflow` 返回主结构。
 - 不删除 `ticket_drafts.content`，旧前端或旧数据仍可使用。
-- 不修改已有影响分析主流程的语义判断入口。
+- 不改动上传、文档画像、字段定位、影响分析和 workflow 聚合的主流程语义。
+- 工单生成逻辑允许重构，包括触发器、子单选择、正文生成和前端展示，但必须保持接口兼容。
+- 工单模块重构必须拆出清晰边界：触发器判定、任务卡构建、质量检查、历史案例召回、Markdown 兼容渲染分别独立，避免继续堆成单个大函数或大文件。
 - 新字段必须可为空或有默认值，旧数据可以正常读取。
 - 前端必须兼容旧工单：没有结构化字段时回退展示 `content`。
-- 实现阶段不得改动与本次工单工作台无关的存量逻辑。
+- 实现阶段不得改动与本次工单工作台无关的主流程逻辑。
 
 ## 5. 总体方案
 
@@ -75,18 +77,20 @@
   -> 历史案例复用
 ```
 
-旧逻辑保留：
+主流程保持：
 
 ```text
 classification + impacts -> build_ticket_plan -> TicketDraft.content
 ```
 
-新逻辑增强：
+工单生成模块允许重构为：
 
 ```text
 classification + impacts -> ticket_trigger_engine -> ticket_card_builder
   -> TicketDraft 结构化字段 + 兼容 Markdown content
 ```
+
+其中 `build_ticket_plan` 可以从“直接拼 Markdown 的主实现”调整为“对外兼容入口”，内部调用新的任务卡生成服务。
 
 ## 6. 后端模型设计
 
@@ -459,7 +463,7 @@ A/R：数据治理 / 数据治理
 | `backend/app/models/db_models.py` | 扩展 `TicketDraft` 结构化字段 |
 | `backend/app/models/schemas.py` | 扩展 `TicketDraftRead` |
 | `backend/app/core/database.py` | 旧库补列 |
-| `backend/app/services/reporting_ticket_generator.py` | 保留旧入口，改为生成结构化卡片和兼容 Markdown |
+| `backend/app/services/reporting_ticket_generator.py` | 保留对外入口，内部可重构为编排器，调用任务卡、触发器、质量检查和兼容 Markdown 渲染 |
 | `backend/app/services/ticket_scope_classifier.py` | 升级触发器规则 |
 | `frontend/src/types/api.ts` | 增加结构化字段类型 |
 | `frontend/src/views/ReviewTicketView.vue` | 改为系统分组 + 任务卡 + 折叠证据 |
@@ -478,6 +482,6 @@ A/R：数据治理 / 数据治理
 本设计基于以下确认：
 
 - 用户认可全部优化方向。
-- 用户明确要求不要动到存量逻辑。
-- 因此实现必须以兼容扩展为原则，旧接口、旧字段、旧 Markdown 和旧数据显示路径全部保留。
-
+- 用户纠正约束：不是不能动存量逻辑，而是不要动监管材料上传、文档画像、字段定位、影响分析、workflow 聚合等主流程。
+- 工单生成部分可以调整和重构，但必须保持接口和旧数据兼容，不能把新能力继续堆成难维护的大块模板代码。
+- 因此实现原则是：主流程稳定、工单模块可重构、接口兼容、服务边界清晰、旧 Markdown 和旧数据显示路径保留。
