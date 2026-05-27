@@ -125,10 +125,10 @@
             </div>
           </div>
 
-          <!-- 命中此报送项的概念列表（反向：从 reporting_item_code 反查 conceptHits） -->
+          <!-- 命中此变更证据原文的概念（按 signal.evidence_text 字面包含过滤） -->
           <div v-if="conceptsHittingActiveItem.length" class="active-concepts">
             <h4 class="active-concepts-title">
-              📌 通过这些概念辐射到此报送项
+              📌 本条变更证据原文里命中的概念
               <span class="active-concepts-count">{{ conceptsHittingActiveItem.length }} 个</span>
             </h4>
             <div class="active-concepts-list">
@@ -149,7 +149,7 @@
           <div v-else-if="activeItemNotPinpointed" class="active-concepts active-concepts-empty">
             <span class="active-concepts-empty-icon">ⓘ</span>
             <span>
-              本条变更未精确落格到具体报送项，仅有表级提示。
+              本条变更证据原文未命中已建库的监管概念。
               <span class="active-concepts-empty-hint">文档整体命中的概念见顶部横幅。</span>
             </span>
           </div>
@@ -159,7 +159,16 @@
           <div class="quote-list">
             <div class="quote" v-if="activeSignal.evidence_text">
               <span class="loc">原文摘录 · 置信度 {{ Math.round(activeSignal.confidence * 100) }}%</span>
-              <span>{{ activeSignal.evidence_text }}</span>
+              <div
+                v-for="row in formattedEvidenceRows"
+                :key="row.key"
+                class="evidence-row"
+              >
+                <span v-if="row.action" class="evidence-meta">
+                  {{ row.action }} · {{ row.author || "未知作者" }} · {{ row.date || "日期未知" }}
+                </span>
+                <span class="evidence-body">{{ row.text }}</span>
+              </div>
             </div>
             <div class="quote" v-else>
               <span class="loc">暂无原文摘录</span>
@@ -314,6 +323,14 @@ interface CatalogTable {
   items: CatalogItem[];
 }
 
+interface EvidenceRow {
+  key: string;
+  action: string;
+  author: string;
+  date: string;
+  text: string;
+}
+
 // Build catalog from change_signals in profile
 const catalog = computed<CatalogTable[]>(() => {
   const signals = props.workflow?.document_profile?.change_signals ?? [];
@@ -407,56 +424,38 @@ function pathLabel(hit: ConceptMatchHit): string {
 }
 
 /**
- * 反查"哪些概念辐射到了当前 activeSignal"。
+ * 反查"本条变更证据原文里命中了哪些概念"。
  *
- * 三档策略（2026-05-26 修订）：
- *   档 1 精确 item_code 匹配：最强信号
- *   档 2 indicator_hint 与概念名称/别名的字面 fuzzy 匹配：当 LLM 没落格 item_code 时的兜底
- *   档 3 都不命中 → 返回空，UI 用提示语兜底
- *
- * 不再做"同 table_code 前缀全捞"——那会把同表其他行无关概念误算到本条上
- * （之前的 bug：选中"买入返售"行时把"同业融入余额/最大百家"也带进来）。
- * 顶部横幅已展示文档级所有命中概念，per-row 区块只承担"本条相关"职责。
+ * 设计（2026-05-26 修订二，回应用户反馈）：
+ *   - 不再用 item_code 反查 / indicator_hint fuzzy / table 前缀兜底
+ *   - 改为：从 signal.evidence_text 原文片段里**真包含**概念 matched_alias / canonical_name
+ *           的概念才算命中
+ *   - 跨表辐射（reg_concept_reporting_item_map）的价值在**顶部横幅**而非本区块
+ *     —— per-item 详情和原文摘录在同屏，用户期望"原文里出现什么就显示什么"，
+ *     而不是"历史 map 配置认为这个 item 关联什么"
+ *   - 兜底：用 signal.indicator_hint 也做一次包含检查（弥补 evidence_text 没截到的）
  */
 const conceptsHittingActiveItem = computed<ConceptMatchHit[]>(() => {
   const signal = activeSignal.value;
   if (!signal || !props.conceptHits?.length) return [];
 
-  // 档 1：精确 item_code 匹配
-  const targetCodes = new Set<string>();
-  if (signal.matched_item_code) targetCodes.add(signal.matched_item_code);
-  const composite = signal.composite_match;
-  if (composite?.reporting_item_codes) {
-    for (const c of composite.reporting_item_codes) targetCodes.add(c);
-  }
-  if (targetCodes.size > 0) {
-    const exact = props.conceptHits.filter((h) =>
-      h.related_reporting_item_codes.some((c) => targetCodes.has(c)),
-    );
-    if (exact.length) return exact;
-  }
+  // 拼接"原文场景"：evidence_text 是核心；indicator_hint 作为补充（有时 LLM 抽 hint 但 evidence 截得短）
+  const scope = `${signal.evidence_text || ""}\n${signal.indicator_hint || ""}`.trim();
+  if (!scope) return [];
 
-  // 档 2：fuzzy by signal.indicator_hint ↔ concept name/alias 名称匹配
-  const hint = (signal.indicator_hint || "").trim();
-  if (!hint) return [];
-  const hintNorm = hint.replace(/[\s·_\-/×]/g, "");
-  if (hintNorm.length < 2) return [];
-  const fuzzy = props.conceptHits.filter((h) => {
-    const candidates = [h.canonical_name, h.matched_alias].filter(Boolean);
-    return candidates.some((name) => {
-      const norm = (name || "").replace(/[\s·_\-/×]/g, "");
-      if (!norm) return false;
-      // 双向包含：hint 包含 concept 名 / concept 名包含 hint 关键片段
-      return hintNorm.includes(norm) || norm.includes(hintNorm);
-    });
+  return props.conceptHits.filter((h) => {
+    const probes = [h.matched_alias, h.canonical_name].filter(Boolean);
+    return probes.some((token) => token && scope.includes(token));
   });
-  return fuzzy;
 });
 
-/** 当 activeSignal 存在但精确档和 fuzzy 档都未命中时，给出友好提示 */
+/** activeSignal 存在但没在原文里命中已建库概念时显示友好提示 */
 const activeItemNotPinpointed = computed<boolean>(() => {
   const signal = activeSignal.value;
   if (!signal || !props.conceptHits?.length) return false;
+  // 必须有原文场景才显示"未命中"提示；evidence/hint 都空说明 signal 自己就空
+  const scope = `${signal.evidence_text || ""}${signal.indicator_hint || ""}`.trim();
+  if (!scope) return false;
   return conceptsHittingActiveItem.value.length === 0;
 });
 
@@ -557,6 +556,10 @@ const activeCompositeMatch = computed(() => {
   }
   return null;
 });
+
+const formattedEvidenceRows = computed<EvidenceRow[]>(() =>
+  formatEvidenceText(activeSignal.value?.evidence_text ?? ""),
+);
 
 const semanticMatchTitle = computed(() =>
   activeCompositeMatch.value?.match_type === "SEMANTIC_FIELD_MATCH" ? "语义字段命中" : "组合命中",
@@ -892,6 +895,65 @@ function normaliseForMatch(raw = ""): string {
   return cleanBusinessLabel(raw).replace(/[-·_\s]/g, "");
 }
 
+function formatEvidenceText(evidence = ""): EvidenceRow[] {
+  const parts = evidence
+    .split(/[；\n]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const rows: EvidenceRow[] = [];
+  const fragmentsByKey = new Map<string, string[]>();
+
+  for (const part of parts) {
+    const match = part.match(/^-?\s*\[\s*(新增|删除)\s*\|\s*([^|]+?)\s*\|\s*([^\]]+?)\s*\]\s*(.*)$/);
+    if (!match) {
+      rows.push({
+        key: `raw-${rows.length}-${part}`,
+        action: "",
+        author: "",
+        date: "",
+        text: part,
+      });
+      continue;
+    }
+
+    const [, action, author, date, text] = match;
+    const key = `${action}|${author.trim()}|${date.trim()}`;
+    const existing = rows.find((row) => row.key === key);
+    if (!existing) {
+      rows.push({
+        key,
+        action,
+        author: author.trim(),
+        date: date.trim(),
+        text: "",
+      });
+      fragmentsByKey.set(key, []);
+    }
+    fragmentsByKey.get(key)!.push(text.trim());
+  }
+
+  return rows.map((row) => {
+    const fragments = fragmentsByKey.get(row.key);
+    if (!fragments) return row;
+    return {
+      ...row,
+      text: normaliseEvidenceFragments(fragments),
+    };
+  });
+}
+
+function normaliseEvidenceFragments(fragments: string[]): string {
+  const text = fragments
+    .filter(Boolean)
+    .join("")
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .replace(/([A-Z])\.(?=\S)/g, "$1. ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text || "-";
+}
+
 const changeTypeLabel = (t: TableChangeType): string =>
   ({ ADD: "新增", MODIFY: "修改", DELETE: "删除", SCOPE_ADJUST: "口径调整", INSTRUCTION_ADJUST: "说明调整", UNCLEAR: "待确认" } as Record<string, string>)[t] ?? t;
 
@@ -1068,4 +1130,33 @@ const lineageRoleLabel = (r: string): string =>
 }
 .active-concepts-empty-icon { color: var(--ink-400, #aaa); }
 .active-concepts-empty-hint { color: var(--ink-400, #aaa); }
+
+.evidence-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.evidence-row + .evidence-row {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border, #e8dfd2);
+}
+
+.evidence-meta {
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(234, 84, 4, 0.1);
+  color: var(--orange-700, #b94400);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.evidence-body {
+  color: var(--ink-800);
+  line-height: 1.7;
+  word-break: break-word;
+}
 </style>
