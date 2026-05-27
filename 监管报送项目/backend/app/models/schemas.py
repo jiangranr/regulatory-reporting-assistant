@@ -114,6 +114,19 @@ class TicketDraftRead(BaseModel):
     business_signoff_required: bool = False
     closure_review_required: bool = False
     related_impact_codes: str = "[]"
+    summary: str = ""
+    responsible_system: str = ""
+    affected_systems: str = "[]"
+    affected_assets: str = "{}"
+    must_do: str = "[]"
+    must_confirm: str = "[]"
+    output_artifacts: str = "[]"
+    acceptance_criteria_structured: str = "[]"
+    blockers: str = "[]"
+    evidence_refs: str = "[]"
+    historical_cases: str = "[]"
+    quality_score: int = 0
+    quality_flags: str = "[]"
     status: str = "DRAFT"
     created_at: datetime | None = None
 
@@ -504,4 +517,3 @@ class TaskWorkflowResponse(BaseModel):
     impact_items: list[ReportingImpactItemRead]
     rule_cards: list[RuleCardRead]
     ticket_drafts: list[TicketDraftRead]
-
