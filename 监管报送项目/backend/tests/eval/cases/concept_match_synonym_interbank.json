@@ -1,0 +1,23 @@
+{
+  "id": "concept_match_synonym_interbank",
+  "description": "同义改写关键场景：'拆放同业 / 银行间拆借 / 金融机构间往来融入款项' 都应通过 embedding 语义召回到 CON_INTERBANK_BORROWING_BAL。这是补丁 A 多路召回的核心价值场景。",
+  "category": "rule_based",
+  "target": "concept_match",
+  "tags": ["concept", "synonym", "embedding", "G24"],
+  "inputs": {
+    "text": "本通知扩大同业资金往来统计范围，将拆放同业业务的资金来源端、银行间拆借融入款项以及金融机构间往来融入款项一并纳入统计。",
+    "reporting_system_scope": "1104"
+  },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_INTERBANK_BORROWING_BAL" },
+      "reason": "三种同义改写中至少要命中 CON_INTERBANK_BORROWING_BAL（拆放同业/银行间拆借/金融机构间往来融入）"
+    },
+    {
+      "kind": "signal_count",
+      "spec": { "min": 1, "max": 8 },
+      "reason": "embedding 召回应在合理范围；过多说明 noise，过少说明精度不够"
+    }
+  ]
+}

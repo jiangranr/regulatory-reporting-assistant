@@ -11,8 +11,8 @@
   "expectations": [
     {
       "kind": "signal_count",
-      "spec": { "min": 1, "max": 6 },
-      "reason": "至少命中 1 个核心概念；上限放宽允许跨概念辐射召回"
+      "spec": { "min": 1, "max": 15 },
+      "reason": "至少命中 1 个核心概念；上限考虑 embedding 路 4 启用后会带回更多语义邻居（如同业存放/表内自营投资），15 是平衡精度与召回的合理阈值"
     },
     {
       "kind": "must_contain",

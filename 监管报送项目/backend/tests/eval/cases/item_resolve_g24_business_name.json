@@ -1,0 +1,22 @@
+{
+  "id": "item_resolve_g24_business_name",
+  "description": "G24 业务名命中：indicator_hint 直接含'同业融入余额'，应精确落格到 G24.MAIN.INTERBANK_BORROWING_BAL_TOP100。",
+  "category": "rule_based",
+  "target": "item_resolve",
+  "tags": ["item_resolve", "G24", "precise"],
+  "inputs": {
+    "table_code": "G24",
+    "indicator_hint": "最大百家金融机构同业融入余额"
+  },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "G24.MAIN.INTERBANK_BORROWING_BAL_TOP100" },
+      "reason": "G24 单 item 表，业务名直接命中"
+    },
+    {
+      "kind": "all_signals_match",
+      "spec": { "field": "match_status", "in": ["FUZZY_PRECISE"] }
+    }
+  ]
+}

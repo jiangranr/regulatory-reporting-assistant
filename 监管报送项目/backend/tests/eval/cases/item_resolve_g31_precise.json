@@ -1,0 +1,18 @@
+{
+  "id": "item_resolve_g31_precise",
+  "description": "G31 业务名精确命中：'债券投资余额'应直接命中 G31.PART_I.BOND_INVESTMENT_BALANCE。这是 G31 唯一能精确落格的形态。",
+  "category": "rule_based",
+  "target": "item_resolve",
+  "tags": ["item_resolve", "G31", "precise"],
+  "inputs": {
+    "table_code": "G31",
+    "indicator_hint": "债券投资余额"
+  },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "G31.PART_I.BOND_INVESTMENT_BALANCE" },
+      "reason": "字面 alias 命中"
+    }
+  ]
+}

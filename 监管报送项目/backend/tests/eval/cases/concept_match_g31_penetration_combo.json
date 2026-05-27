@@ -1,0 +1,33 @@
+{
+  "id": "concept_match_g31_penetration_combo",
+  "description": "G31 穿透原则组合场景：一段话同时讲资产管理产品 + 底层资产 + 穿透原则，应同时召回 3 个相关概念。验证多概念命中能力。",
+  "category": "rule_based",
+  "target": "concept_match",
+  "tags": ["concept", "multi-hit", "G31"],
+  "inputs": {
+    "text": "本行投资的资产管理产品应按穿透原则填报，识别底层资产类型后还原到对应报送行。",
+    "reporting_system_scope": "1104"
+  },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_ASSET_MGMT_PRODUCT" },
+      "reason": "原文出现'资产管理产品'，alias 直接命中"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_LOOK_THROUGH" },
+      "reason": "原文出现'穿透原则'，alias 直接命中"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_UNDERLYING_ASSET" },
+      "reason": "原文出现'底层资产'，alias 直接命中"
+    },
+    {
+      "kind": "signal_count",
+      "spec": { "min": 3, "max": 10 },
+      "reason": "至少 3 个核心概念命中；上限放宽接受 embedding 多召几个"
+    }
+  ]
+}

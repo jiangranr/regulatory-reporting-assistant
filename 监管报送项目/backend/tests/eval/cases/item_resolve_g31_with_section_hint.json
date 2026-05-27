@@ -1,0 +1,23 @@
+{
+  "id": "item_resolve_g31_with_section_hint",
+  "description": "G31 含 PART_I + 业务名的复合 hint，验证 token 路径能识别多个有意义片段。",
+  "category": "rule_based",
+  "target": "item_resolve",
+  "tags": ["item_resolve", "G31", "multi-token"],
+  "inputs": {
+    "table_code": "G31",
+    "indicator_hint": "第I部分 底层资产投资情况 债券投资 账面余额"
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 1, "max": 30 },
+      "reason": "至少命中一个 G31 PART_I 下的 item；上限放宽允许 LANE 多召回"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "G31.PART_I" },
+      "reason": "所有命中都应来自 G31.PART_I 下的 cell"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "id": "item_resolve_g24_singleton_fallback",
+  "description": "G24 单 item 表的兜底特性：即使 hint 是无关业务名（如'境外法人机构融入款项'），也应通过 table-singleton 路径返回唯一 item。",
+  "category": "rule_based",
+  "target": "item_resolve",
+  "tags": ["item_resolve", "G24", "singleton"],
+  "inputs": {
+    "table_code": "G24",
+    "indicator_hint": "境外法人机构融入款项（列代码C09）"
+  },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "G24.MAIN.INTERBANK_BORROWING_BAL_TOP100" },
+      "reason": "G24 只有 1 条 item，单表唯一性兜底"
+    },
+    {
+      "kind": "all_signals_match",
+      "spec": { "field": "match_status", "in": ["FUZZY_PRECISE"] }
+    }
+  ]
+}

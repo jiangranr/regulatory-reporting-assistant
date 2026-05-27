@@ -1,0 +1,18 @@
+{
+  "id": "item_resolve_empty_hint",
+  "description": "空 indicator_hint 应返回 UNRESOLVED，不抛错。",
+  "category": "rule_based",
+  "target": "item_resolve",
+  "tags": ["item_resolve", "edge-case"],
+  "inputs": {
+    "table_code": "G24",
+    "indicator_hint": ""
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 0, "max": 0 },
+      "reason": "空 hint → UNRESOLVED"
+    }
+  ]
+}

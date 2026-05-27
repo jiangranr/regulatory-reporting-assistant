@@ -1,0 +1,18 @@
+{
+  "id": "item_resolve_g31_pure_number_unresolved",
+  "description": "G31 纯数字编号 hint（'1.8.1/1.8.2/1.8.3 子项'）应返回 UNRESOLVED：tokenise 过滤纯数字片段，没有可靠字面信号。这是诚实的失败 — 我们用空态提示业务方'未精确落格'比误命中更可信。",
+  "category": "rule_based",
+  "target": "item_resolve",
+  "tags": ["item_resolve", "G31", "unresolved", "honest-fail"],
+  "inputs": {
+    "table_code": "G31",
+    "indicator_hint": "1.8.1/1.8.2/1.8.3 子项"
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 0, "max": 0 },
+      "reason": "纯数字片段被 tokenise 过滤，无可靠匹配信号 → 应返回空（UNRESOLVED）。这是 item_resolver 当前的设计边界"
+    }
+  ]
+}

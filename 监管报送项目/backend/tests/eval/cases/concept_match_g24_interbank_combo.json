@@ -1,0 +1,28 @@
+{
+  "id": "concept_match_g24_interbank_combo",
+  "description": "G24 同业融入场景多概念组合：原文同时点'最大百家 + 金融机构 + 同业融入余额'，3 个概念都应命中。覆盖 alias + 跨概念辐射场景。",
+  "category": "rule_based",
+  "target": "concept_match",
+  "tags": ["concept", "multi-hit", "G24"],
+  "inputs": {
+    "text": "G24 表统计最大百家金融机构同业融入余额时，按交易对手机构类型分类，明确发行人类型代码。",
+    "reporting_system_scope": "1104"
+  },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_TOP_100" },
+      "reason": "原文'最大百家'"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_FINANCIAL_INSTITUTION" },
+      "reason": "原文'金融机构'"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_INTERBANK_BORROWING_BAL" },
+      "reason": "原文'同业融入余额'"
+    }
+  ]
+}

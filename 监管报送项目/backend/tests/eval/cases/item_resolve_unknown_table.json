@@ -1,0 +1,18 @@
+{
+  "id": "item_resolve_unknown_table",
+  "description": "未知 table_code（如 'G999'）应返回 UNRESOLVED 空结果，不抛错。",
+  "category": "rule_based",
+  "target": "item_resolve",
+  "tags": ["item_resolve", "edge-case"],
+  "inputs": {
+    "table_code": "G999",
+    "indicator_hint": "任意 hint 内容"
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 0, "max": 0 },
+      "reason": "未知 table_code → 直接 UNRESOLVED 兜底"
+    }
+  ]
+}

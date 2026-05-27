@@ -1,0 +1,28 @@
+{
+  "id": "concept_match_cross_table_g24_g31",
+  "description": "跨表场景：一段发文同时涉及 G24（同业融入）和 G31（投资业务），应同时召回两张表的相关概念。这是真实跨表口径调整公告的典型形态。",
+  "category": "rule_based",
+  "target": "concept_match",
+  "tags": ["concept", "cross-table", "G24", "G31"],
+  "inputs": {
+    "text": "G24 表同业融入余额与 G31 表债券投资余额跨表勾稽校验：本行对其他金融机构的债券投资视同同业资金运用，需双表一致列示。",
+    "reporting_system_scope": "1104"
+  },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_INTERBANK_BORROWING_BAL" },
+      "reason": "G24 同业融入"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "CON_BOND_INVESTMENT_BAL" },
+      "reason": "G31 债券投资"
+    },
+    {
+      "kind": "signal_count",
+      "spec": { "min": 2, "max": 10 },
+      "reason": "至少 2 张表的核心概念都召回到"
+    }
+  ]
+}

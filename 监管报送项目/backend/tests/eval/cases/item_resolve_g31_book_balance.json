@@ -1,0 +1,18 @@
+{
+  "id": "item_resolve_g31_book_balance",
+  "description": "G31 '债券投资账面余额' alias 命中场景。这是 LLM 抽 hint 时常见的、含'账面余额'修饰的标准形态。",
+  "category": "rule_based",
+  "target": "item_resolve",
+  "tags": ["item_resolve", "G31", "alias-variant"],
+  "inputs": {
+    "table_code": "G31",
+    "indicator_hint": "债券投资账面余额"
+  },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "G31.PART_I.BOND_INVESTMENT_BALANCE" },
+      "reason": "'债券投资账面余额'是 G31.PART_I.BOND_INVESTMENT_BALANCE 的 item_name 一部分"
+    }
+  ]
+}

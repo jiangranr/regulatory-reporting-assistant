@@ -1,0 +1,28 @@
+{
+  "id": "concept_match_negative_partial_overlap",
+  "description": "高难度负样本：文本里有'安全'、'资产'、'流动'等词，字面上跟一些监管概念（合格优质流动性资产、底层资产）有 partial 重叠，但**语义上无关**（消防安全 + 物资管理）。验证 embedding 召回不会被表面字符迷惑。",
+  "category": "rule_based",
+  "target": "concept_match",
+  "tags": ["concept", "negative", "robustness"],
+  "inputs": {
+    "text": "关于办公场所消防安全检查与物资资产盘点的统一部署，各分支机构应组织流动检查小组按时上报结果。",
+    "reporting_system_scope": "1104"
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 0, "max": 2 },
+      "reason": "消防+物资盘点跟 1104 监管概念无关；最多容忍 2 个边缘误召回（如金融机构泛词）"
+    },
+    {
+      "kind": "must_not_contain",
+      "spec": { "keyword": "CON_HQLA" },
+      "reason": "防回归：'流动'+'资产'字面接近 HQLA 但语义无关，不能误召回"
+    },
+    {
+      "kind": "must_not_contain",
+      "spec": { "keyword": "CON_UNDERLYING_ASSET" },
+      "reason": "防回归：'物资资产'不是'底层资产'"
+    }
+  ]
+}

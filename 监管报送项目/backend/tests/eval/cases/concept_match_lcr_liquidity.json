@@ -1,0 +1,22 @@
+{
+  "id": "concept_match_lcr_liquidity",
+  "description": "流动性场景：LCR 和合格优质流动性资产（HQLA）是 G25 报表核心概念，应同时召回。验证流动性域概念覆盖。",
+  "category": "rule_based",
+  "target": "concept_match",
+  "tags": ["concept", "G25", "liquidity"],
+  "inputs": {
+    "text": "调整流动性覆盖率计算口径，合格优质流动性资产分级标准与流动性期限缺口统计范围同步更新。",
+    "reporting_system_scope": "1104"
+  },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword_any": ["CON_LCR", "CON_HQLA"] },
+      "reason": "流动性覆盖率 / 合格优质流动性资产 至少命中一个"
+    },
+    {
+      "kind": "signal_count",
+      "spec": { "min": 1, "max": 8 }
+    }
+  ]
+}

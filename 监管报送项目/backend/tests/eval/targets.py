@@ -32,8 +32,38 @@ from app.models.schemas import ConceptMatchRequest
 from app.services.concept_seed import seed_concepts_and_rule_cards
 from app.services.excel_parser import ExcelParseResult, parse_excel
 from app.services.g31_excel_diff import diff_excel_with_db
+from app.services.item_resolver import ReportingItemResolver
 
 from .framework import register_target
+
+# .env 文件的路径（用于绕开 conftest 的 DATABASE_URL 覆盖）
+_BACKEND_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+
+
+def _read_persistent_database_url() -> str | None:
+    """从 backend/.env 直接读 REG_ASSISTANT_DATABASE_URL。
+
+    为什么不用 app.core.config.get_settings()：
+      - get_settings 用 pydantic-settings + lru_cache，conftest.py 在 import 时
+        把 os.environ["REG_ASSISTANT_DATABASE_URL"] 改成 sqlite 测试库
+      - 即使后续读 .env，环境变量优先级更高，settings 仍是 sqlite
+      - 所以这里直接 dumb 读 .env 字符串，绕开覆盖
+    """
+    if not _BACKEND_ENV_PATH.exists():
+        return None
+    try:
+        for raw_line in _BACKEND_ENV_PATH.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip() == "REG_ASSISTANT_DATABASE_URL":
+                return value.strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return None
 
 # 项目根路径（用于解析 case 里的相对路径）
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -202,12 +232,84 @@ def _run_triplet_excel_diff(inputs: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _session_with_concept_seed() -> Session:
-    """启一个内存 DB，灌入 35+ 概念种子。"""
+    """启一个内存 DB，灌入 35+ 概念种子；如果持久 DB 有 embedding 也一并克隆进来。
+
+    为什么克隆 embedding：
+      eval framework 默认走 in-memory DB（隔离、快、不污染生产数据），
+      但这样 ConceptMatcher 路 4 (embedding 余弦相似度) 看到的向量表是空的，
+      导致同义改写场景（如"拆放同业"）在 eval 里完全召不回 —— 与浏览器实测不一致。
+
+    解决：seed 之后立即查询持久 DB 的 RegConceptEmbedding，把 (concept_code, vector,
+    model_name, dim, source_text) 一一克隆到内存 DB。
+      - 持久 DB 已建库（用户跑过 rebuild_concept_embeddings.py）→ 完整四路召回可测
+      - 持久 DB 空 → 静默退路 1+2，与既有降级策略一致，不抛错
+      - 持久 DB 不可达 → 同样静默退路 1+2
+
+    Embedding 数据是只读克隆，不会写回任何 DB；测试隔离不受影响。
+    """
     engine = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(engine)
     session = Session(engine)
     seed_concepts_and_rule_cards(session)
+    _clone_embeddings_from_persistent_db(session)
     return session
+
+
+def _clone_embeddings_from_persistent_db(memory_session: Session) -> None:
+    """把持久 DB 的 RegConceptEmbedding 按 concept_code 克隆到内存 session。
+
+    关键：直接读 `.env` 里的 REG_ASSISTANT_DATABASE_URL 构造独立 engine，
+    **不复用 app.core.database.engine** —— 因为 tests/conftest.py 会把
+    DATABASE_URL 强制改成 sqlite 测试库，那里没有真实 embedding 数据。
+    """
+    try:
+        from app.models.db_models import RegConcept, RegConceptEmbedding
+    except Exception:
+        return
+
+    persistent_url = _read_persistent_database_url()
+    if not persistent_url:
+        return
+
+    try:
+        from sqlmodel import create_engine as _create_engine
+
+        src_engine = _create_engine(persistent_url)
+        with Session(src_engine) as src:
+            rows = list(src.exec(
+                select(RegConcept, RegConceptEmbedding).where(
+                    RegConcept.id == RegConceptEmbedding.concept_id
+                )
+            ).all())
+    except Exception:
+        # 持久 DB 不可达（如本地未启动 MySQL）→ 静默退路 1+2
+        return
+
+    if not rows:
+        return
+
+    # 内存 session 里的 concept_id 跟持久 DB 的不一定一样，按 concept_code 重建 id 映射
+    code_to_memory_id: dict[str, int] = {}
+    for concept in memory_session.exec(select(RegConcept)).all():
+        if concept.id is not None and concept.concept_code:
+            code_to_memory_id[concept.concept_code] = concept.id
+
+    cloned = 0
+    for src_concept, src_embedding in rows:
+        memory_concept_id = code_to_memory_id.get(src_concept.concept_code)
+        if memory_concept_id is None:
+            continue
+        memory_session.add(RegConceptEmbedding(
+            concept_id=memory_concept_id,
+            model_name=src_embedding.model_name,
+            dim=src_embedding.dim,
+            vector=src_embedding.vector,
+            source_text=src_embedding.source_text,
+            created_at=src_embedding.created_at,
+            updated_at=src_embedding.updated_at,
+        ))
+        cloned += 1
+    memory_session.commit()
 
 
 @register_target("concept_match")
@@ -253,6 +355,71 @@ def _run_concept_match(inputs: dict[str, Any]) -> list[dict[str, Any]]:
                 "indicator_hint": hit.concept_code,
                 "evidence_text": f"{hit.canonical_name} | {hit.matched_alias}",
                 "related_reporting_item_codes": related,
+            }
+        )
+    return signals
+
+
+# ── item_resolve target ─────────────────────────────────────────────────
+
+
+@register_target("item_resolve")
+def _run_item_resolve(inputs: dict[str, Any]) -> list[dict[str, Any]]:
+    """走 ReportingItemResolver 全流程，验证 indicator_hint → item_code 落格。
+
+    走持久 DB（与 ConceptMatcher 不同）—— 因为 item_resolver 需要完整的
+    reg_reporting_items 数据（G31 有 455 条，构造内存 seed 不现实），
+    且 item_resolver 不依赖任何外部 API，纯本地查询，无副作用。
+
+    inputs 期望字段：
+      table_code: str          报表代码，如 "G24" / "G31"
+      indicator_hint: str      LLM 抽出的 indicator_hint
+
+    输出 signal-like dict 字段：
+      matched_item_code        FUZZY_PRECISE 时填，LANE/UNRESOLVED 时为空
+      item_codes               候选清单（最多 _LANE_TOP_K 条）
+      match_status             FUZZY_PRECISE / FUZZY_LANE / UNRESOLVED
+      confidence               0~1
+      paths                    ['alias', 'token', 'table-singleton'] 子集
+      change_type              统一 'RESOLVE'，让既有断言 spec 复用
+      indicator_hint           填首个 item_code，让 keyword spec 可命中
+      evidence_text            填 status + matched + 前 3 个候选，便于关键词匹配
+    """
+    table_code = inputs.get("table_code", "")
+    indicator_hint = inputs.get("indicator_hint", "")
+
+    # 走真 DB（与 _clone_embeddings 同思路绕开 conftest 的 DATABASE_URL 覆盖）
+    # item_resolver 依赖完整的 reg_reporting_items 数据，sqlite 测试库里没有
+    persistent_url = _read_persistent_database_url()
+    if not persistent_url:
+        return []
+    from sqlmodel import create_engine as _create_engine
+
+    src_engine = _create_engine(persistent_url)
+    with Session(src_engine) as session:
+        resolver = ReportingItemResolver(session)
+        result = resolver.resolve(table_code, indicator_hint)
+
+    # FUZZY_PRECISE → 单 signal；LANE → 多 signal；UNRESOLVED → 空
+    if result.match_status == "UNRESOLVED" or not result.item_codes:
+        return []
+
+    signals: list[dict[str, Any]] = []
+    for code in result.item_codes:
+        signals.append(
+            {
+                "matched_item_code": result.matched_item_code,
+                "item_code": code,
+                "match_status": result.match_status,
+                "confidence": result.confidence,
+                "paths": result.paths,
+                "change_type": "RESOLVE",
+                "table_code": table_code,
+                "indicator_hint": code,
+                "evidence_text": (
+                    f"{result.match_status} matched={result.matched_item_code} "
+                    f"top={', '.join(result.item_codes[:3])}"
+                ),
             }
         )
     return signals
