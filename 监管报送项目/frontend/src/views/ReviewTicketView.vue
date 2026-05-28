@@ -125,7 +125,6 @@
       <nav class="sub-tabs">
         <button :class="['sub-tab', activeTab === 'plan' ? 'active' : '']" @click="activeTab = 'plan'">
           <Target :size="12" />执行规划
-          <span class="badge">接口待完善</span>
           <span v-if="stats.blocked" class="badge danger">{{ stats.blocked }} 阻塞</span>
         </button>
         <button :class="['sub-tab', activeTab === 'audit' ? 'active' : '']" @click="activeTab = 'audit'">
@@ -136,50 +135,13 @@
       </nav>
 
       <section v-if="activeTab === 'plan'" class="ai-plan as-page">
-        <div class="ai-plan-head">
-          <div class="ai-plan-title">
-            <span class="ai-plan-icon"><Target :size="14" /></span>
-            <h3>执行规划</h3>
-            <span class="ai-plan-meta">详细排期、依赖拓扑、SLA 为接口待完善</span>
-          </div>
-          <span class="pending-chip">/api/ticket-plans 待完善</span>
-        </div>
-        <div class="ai-plan-body">
-          <div class="ai-plan-summary">
-            <span class="label-col"><FileText :size="12" />后端摘要</span>
-            <span>
-              当前任务已返回 <b>{{ tickets.length }}</b> 个草稿，其中母单
-              <b>{{ parentTickets.length }}</b> 个、子单 <b>{{ childRows.length }}</b> 个。
-              可确认字段包括责任角色、责任系统、影响范围、必须动作、待确认问题、证据链和质量评分。
-            </span>
-          </div>
-          <div class="plan-grid">
-            <div class="plan-card critical">
-              <h4><CalendarRange :size="12" />建议执行顺序</h4>
-              <div v-if="childRows.length" class="plan-list">
-                <div v-for="row in childRows" :key="'plan-' + row.idKey" class="plan-item">
-                  <span class="ck-box"></span>
-                  <span class="team">{{ row.ownerLabel }}</span>
-                  <span class="label">{{ row.summary }}</span>
-                </div>
-              </div>
-              <p v-else>子单拆分接口待完善。</p>
-            </div>
-            <div class="plan-card">
-              <h4><TriangleAlert :size="12" />关键风险</h4>
-              <div v-if="blockedRows.length" class="risk-list">
-                <div v-for="row in blockedRows" :key="'risk-' + row.idKey" class="risk high">
-                  <span class="lev">高</span>
-                  <span>{{ row.blockers[0] }}</span>
-                </div>
-              </div>
-              <p v-else>风险分级、阻塞影响范围接口待完善。</p>
-            </div>
-          </div>
-          <div class="ai-plan-foot">
-            <Sparkles :size="12" />
-            <span>本区域不使用原型 mock 数据；现阶段仅基于后端工单字段做事实汇总。</span>
-          </div>
+        <ExecutionPlanCard
+          v-if="validParentTaskId !== null"
+          :key="validParentTaskId"
+          :task-id="validParentTaskId"
+        />
+        <div v-else class="ai-plan-body">
+          <p class="pending-text">母单 task_id 缺失，暂无法加载执行规划。</p>
         </div>
       </section>
 
@@ -485,7 +447,6 @@ import type { PropType } from "vue";
 import {
   ArrowLeft,
   Boxes,
-  CalendarRange,
   Check,
   CheckSquare,
   CircleHelp,
@@ -504,11 +465,11 @@ import {
   Signature,
   Sparkles,
   Target,
-  TriangleAlert,
   UserPlus,
   Users,
   X,
 } from "lucide-vue-next";
+import ExecutionPlanCard from "@/components/ExecutionPlanCard.vue";
 import type { TaskWorkflow, TicketDraft } from "@/types/api";
 
 const props = defineProps<{
@@ -645,6 +606,10 @@ const allChecked = computed(() => {
 
 const parentTitle = computed(() => parentTicket.value?.title || `${props.workflow?.document?.title || "母单标题"}接口待完善`);
 const parentTicketNo = computed(() => (parentTicket.value?.id ? `TKM-${parentTicket.value.id}` : "母单编号接口待完善"));
+const validParentTaskId = computed(() => {
+  const taskId = parentTicket.value?.task_id;
+  return typeof taskId === "number" && Number.isFinite(taskId) && taskId > 0 ? taskId : null;
+});
 const documentRef = computed(() => {
   const doc = props.workflow?.document;
   if (!doc) return "发文接口待完善";

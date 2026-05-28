@@ -104,6 +104,55 @@ export interface TicketPlanResponse {
   children: TicketDraft[];
 }
 
+export type ResponsibleSystem =
+  | "REG_REPORTING_SYSTEM"
+  | "DATA_GOVERNANCE_PLATFORM"
+  | "DATA_MART_ETL"
+  | "SOURCE_SYSTEM"
+  | "DATA_QUALITY_PLATFORM"
+  | "TEST_ACCEPTANCE"
+  | "KNOWLEDGE_ARCHIVE";
+
+export interface ExecutionTask {
+  team: ResponsibleSystem;
+  team_zh: string;
+  action: string;
+  ticket_id: number;
+  is_blocker: boolean;
+  blocker_reason?: string | null;
+}
+
+export interface ExecutionPhase {
+  phase_name: string;
+  tasks: ExecutionTask[];
+}
+
+export interface CriticalRisk {
+  severity: "HIGH" | "MEDIUM" | "LOW";
+  description: string;
+  ticket_id_ref: number | null;
+  mitigation: string;
+}
+
+export interface ExecutionPlan {
+  task_id: number;
+  executive_summary: string;
+  estimated_duration: string;
+  execution_phases: ExecutionPhase[];
+  critical_risks: CriticalRisk[];
+  team_coordination: string;
+  generated_at: string;
+  generated_by: string;
+  confidence: number;
+  needs_human_review: boolean;
+}
+
+export interface ExecutionPlanResponse {
+  status: "NOT_GENERATED" | "READY" | "DEGRADED" | "STALE";
+  plan: ExecutionPlan | null;
+  warning?: string;
+}
+
 export interface RegClause {
   id: number;
   document_id: number;

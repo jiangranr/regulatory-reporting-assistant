@@ -42,6 +42,16 @@ const baseTicket: TicketDraft = {
 };
 
 function workflowWithTicket(ticket: Partial<TicketDraft>): TaskWorkflow {
+  const parentTicket = { ...baseTicket };
+  const childTicket: TicketDraft = {
+    ...baseTicket,
+    ...ticket,
+    id: 2,
+    parent_ticket_id: parentTicket.id,
+    ticket_role: "CHILD",
+    action_ticket_type: ticket.action_ticket_type ?? "DATA_MAPPING",
+  };
+
   return {
     task: {
       id: 1,
@@ -96,12 +106,43 @@ function workflowWithTicket(ticket: Partial<TicketDraft>): TaskWorkflow {
     lineage_candidates: [],
     impact_items: [],
     rule_cards: [],
-    ticket_drafts: [{ ...baseTicket, ...ticket }],
+    ticket_drafts: [parentTicket, childTicket],
   };
 }
 
+async function openFirstChildDetail(wrapper: ReturnType<typeof mount>): Promise<void> {
+  const auditTab = wrapper.findAll("button").find((button) => button.text().includes("工单审核"));
+  if (!auditTab) throw new Error("工单审核 tab not found");
+  await auditTab.trigger("click");
+  await wrapper.get("tbody tr").trigger("click");
+}
+
+const globalStubs = {
+  ExecutionPlanCard: { template: "<div data-test=\"execution-plan-card-stub\" />" },
+};
+
 describe("ReviewTicketView", () => {
-  it("renders structured ticket fields and hides the fixed SQL draft block", () => {
+  it("shows the execution plan card only inside the execution-plan sub tab", async () => {
+    const wrapper = mount(ReviewTicketView, {
+      props: {
+        busy: false,
+        workflow: workflowWithTicket({
+          summary: "确认 G31 优先股口径调整影响范围",
+        }),
+      },
+      global: { stubs: globalStubs },
+    });
+
+    expect(wrapper.find(".ai-plan [data-test='execution-plan-card-stub']").exists()).toBe(true);
+
+    const auditTab = wrapper.findAll("button").find((button) => button.text().includes("工单审核"));
+    if (!auditTab) throw new Error("工单审核 tab not found");
+    await auditTab.trigger("click");
+
+    expect(wrapper.find("[data-test='execution-plan-card-stub']").exists()).toBe(false);
+  });
+
+  it("renders structured ticket fields and hides the fixed SQL draft block", async () => {
     const wrapper = mount(ReviewTicketView, {
       props: {
         busy: false,
@@ -113,7 +154,10 @@ describe("ReviewTicketView", () => {
           quality_score: 92,
         }),
       },
+      global: { stubs: globalStubs },
     });
+
+    await openFirstChildDetail(wrapper);
 
     expect(wrapper.text()).toContain("监管报送系统");
     expect(wrapper.text()).toContain("确认 G31 优先股口径调整影响范围");
@@ -123,7 +167,7 @@ describe("ReviewTicketView", () => {
     expect(wrapper.text()).not.toContain("可审查 SQL · 参考草稿");
   });
 
-  it("falls back to content markdown for old tickets without structured fields", () => {
+  it("falls back to content markdown for old tickets without structured fields", async () => {
     const wrapper = mount(ReviewTicketView, {
       props: {
         busy: false,
@@ -134,7 +178,10 @@ describe("ReviewTicketView", () => {
           must_do: "",
         }),
       },
+      global: { stubs: globalStubs },
     });
+
+    await openFirstChildDetail(wrapper);
 
     expect(wrapper.text()).toContain("## 老工单正文");
     expect(wrapper.text()).toContain("请按原 Markdown 方式展示。");
