@@ -36,6 +36,7 @@ def init_db() -> None:
     _ensure_reg_reporting_impact_columns()
     _ensure_ticket_draft_columns()
     _ensure_reg_reporting_change_candidate_columns()
+    _ensure_reg_task_execution_plan_columns()
 
 
 def _ensure_reg_document_parse_columns() -> None:
@@ -297,6 +298,41 @@ def _ensure_reg_reporting_change_candidate_columns() -> None:
                 if default is not None:
                     connection.execute(
                         text(f"UPDATE reg_reporting_change_candidates SET `{name}` = :val WHERE `{name}` IS NULL"),
+                        {"val": default},
+                    )
+
+
+def _ensure_reg_task_execution_plan_columns() -> None:
+    """补 reg_task_execution_plan 表的可选列（旧库兼容）。
+
+    SQLModel.metadata.create_all 会自动建表，本函数只负责给已存在的旧表
+    追加新列，保证向后兼容。
+    """
+    inspector = inspect(engine)
+    if "reg_task_execution_plan" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("reg_task_execution_plan")}
+    text_column = "TEXT" if engine.dialect.name in {"mysql", "mariadb"} else "TEXT DEFAULT ''"
+    new_cols = [
+        ("status", "VARCHAR(20) DEFAULT 'READY'", None),
+        ("confidence", "FLOAT DEFAULT 0.0", None),
+        ("needs_human_review", "BOOLEAN DEFAULT 0", None),
+        ("warning", text_column, ""),
+        ("generated_by", "VARCHAR(64) DEFAULT ''", None),
+        ("feedback_thumbs_up", "INTEGER DEFAULT 0", None),
+        ("feedback_thumbs_down", "INTEGER DEFAULT 0", None),
+        ("last_feedback_comment", text_column, ""),
+        ("updated_at", "DATETIME", None),
+    ]
+    with engine.begin() as connection:
+        for name, ddl, default in new_cols:
+            if name not in existing:
+                connection.execute(
+                    text(f"ALTER TABLE reg_task_execution_plan ADD COLUMN {name} {ddl}")
+                )
+                if default is not None:
+                    connection.execute(
+                        text(f"UPDATE reg_task_execution_plan SET `{name}` = :val WHERE `{name}` IS NULL"),
                         {"val": default},
                     )
 

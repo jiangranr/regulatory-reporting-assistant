@@ -47,6 +47,30 @@ class RegTask(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class RegTaskExecutionPlan(SQLModel, table=True):
+    """Module D · AI 工单执行规划。
+
+    一条任务对应至多一条规划（task_id 唯一索引），重新生成走 UPDATE。
+    plan_content 为 ExecutionPlan 的 JSON 字符串（按 prompt schema）。
+    """
+
+    __tablename__ = "reg_task_execution_plan"
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: int = Field(index=True, unique=True)
+    plan_content: str = Field(sa_column=Column(Text))
+    status: str = Field(default="READY", index=True)  # READY / DEGRADED / STALE / INVALID
+    confidence: float = 0.0
+    needs_human_review: bool = False
+    warning: str = Field(default="", sa_column=Column(Text))
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_by: str = ""           # 如 "planner_v1@2026-05-28"
+    feedback_thumbs_up: int = 0
+    feedback_thumbs_down: int = 0
+    last_feedback_comment: str = Field(default="", sa_column=Column(Text))
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 
 class RegReportingSystem(SQLModel, table=True):
     __tablename__ = "reg_reporting_systems"

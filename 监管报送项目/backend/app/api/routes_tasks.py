@@ -18,6 +18,7 @@ from app.models.db_models import (
     RegReportingRuleCard,
     RegReportingRuleCardConceptMap,
     RegConcept,
+    RegTaskExecutionPlan,
     ReportingItemLineage,
     RegSemanticItem,
     RegTask,
@@ -26,6 +27,10 @@ from app.models.db_models import (
 from app.models.enums import RiskLevel, TaskStatus
 from app.models.schemas import (
     DocumentTaskProfileRead,
+    ExecutionPlanFeedbackRequest,
+    ExecutionPlanFeedbackResponse,
+    ExecutionPlanRead,
+    ExecutionPlanResponse,
     ImpactAnalysisResponse,
     RegClauseRead,
     RegDocumentRead,
@@ -52,6 +57,13 @@ from app.services.reporting_ticket_generator import (
     TicketPlan,
     build_ticket_plan,
     generate_reporting_ticket_markdown,
+)
+from app.services.ticket_execution_planner import (
+    ChildTicketContext,
+    ExecutionPlannerInput,
+    ParentTicketContext,
+    RegulatoryDocumentContext,
+    generate_execution_plan,
 )
 from app.models.schemas import TicketPlanResponse
 
@@ -887,3 +899,247 @@ def _build_workflow_steps(
             status="DONE" if tickets else "PENDING",
         ),
     ]
+
+
+# ── Module D · AI 工单执行规划 ──────────────────────────────────────────────
+
+
+@router.get(
+    "/{task_id}/execution-plan",
+    response_model=ExecutionPlanResponse,
+)
+def get_execution_plan(
+    task_id: int, session: Session = Depends(get_session)
+) -> ExecutionPlanResponse:
+    """读取已生成的执行规划。不存在时返回 NOT_GENERATED。"""
+
+    _get_task_or_404(task_id, session)
+    row = session.exec(
+        select(RegTaskExecutionPlan).where(RegTaskExecutionPlan.task_id == task_id)
+    ).first()
+    if row is None:
+        return ExecutionPlanResponse(status="NOT_GENERATED", plan=None)
+
+    try:
+        plan_dict = json.loads(row.plan_content) if row.plan_content else {}
+    except json.JSONDecodeError:
+        return ExecutionPlanResponse(
+            status="DEGRADED",
+            plan=None,
+            warning="持久化的 plan_content 不是合法 JSON，请重新生成",
+        )
+
+    plan_dict.setdefault("task_id", task_id)
+    plan_dict.setdefault("generated_at", row.generated_at)
+    plan_dict.setdefault("generated_by", row.generated_by)
+    plan_dict.setdefault("confidence", row.confidence)
+    plan_dict.setdefault("needs_human_review", row.needs_human_review)
+    return ExecutionPlanResponse(
+        status=row.status or "READY",
+        plan=ExecutionPlanRead(**plan_dict),
+        warning=row.warning or "",
+    )
+
+
+@router.post(
+    "/{task_id}/execution-plan",
+    response_model=ExecutionPlanResponse,
+)
+def generate_or_refresh_execution_plan(
+    task_id: int, session: Session = Depends(get_session)
+) -> ExecutionPlanResponse:
+    """(重新)生成执行规划。从工单草稿 + 监管元数据构造输入。"""
+
+    task = _get_task_or_404(task_id, session)
+    document = session.get(RegDocument, task.document_id)
+    parent_row, child_rows = _load_parent_and_children_for_planner(task_id, session)
+    if parent_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="尚未生成工单草稿，无法规划。请先调用 /generate-ticket。",
+        )
+
+    payload = _build_planner_input(task_id, document, parent_row, child_rows)
+    result = generate_execution_plan(payload)
+
+    if result.status == "EMPTY":
+        return ExecutionPlanResponse(
+            status="NOT_GENERATED",
+            plan=None,
+            warning=result.warning,
+        )
+
+    plan = result.plan
+    assert plan is not None  # READY / DEGRADED 都给 plan
+    plan_dict = json.loads(plan.model_dump_json())
+    plan_dict["task_id"] = task_id
+
+    _persist_execution_plan(
+        task_id=task_id,
+        plan_dict=plan_dict,
+        status_value=result.status,
+        warning=result.warning,
+        session=session,
+    )
+
+    return ExecutionPlanResponse(
+        status=result.status,
+        plan=ExecutionPlanRead(**plan_dict),
+        warning=result.warning,
+    )
+
+
+@router.post(
+    "/{task_id}/execution-plan/feedback",
+    response_model=ExecutionPlanFeedbackResponse,
+)
+def submit_execution_plan_feedback(
+    task_id: int,
+    payload: ExecutionPlanFeedbackRequest,
+    session: Session = Depends(get_session),
+) -> ExecutionPlanFeedbackResponse:
+    """记录用户对规划的 👍 / 👎 反馈。"""
+
+    _get_task_or_404(task_id, session)
+    row = session.exec(
+        select(RegTaskExecutionPlan).where(RegTaskExecutionPlan.task_id == task_id)
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="尚无执行规划可反馈",
+        )
+
+    thumbs = payload.thumbs.lower()
+    if thumbs == "up":
+        row.feedback_thumbs_up = (row.feedback_thumbs_up or 0) + 1
+    elif thumbs == "down":
+        row.feedback_thumbs_down = (row.feedback_thumbs_down or 0) + 1
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="thumbs 必须是 'up' 或 'down'",
+        )
+    if payload.comment:
+        row.last_feedback_comment = payload.comment
+    row.updated_at = datetime.utcnow()
+    session.add(row)
+    session.commit()
+    return ExecutionPlanFeedbackResponse(ok=True)
+
+
+def _load_parent_and_children_for_planner(
+    task_id: int, session: Session
+) -> tuple[TicketDraft | None, list[TicketDraft]]:
+    drafts = session.exec(
+        select(TicketDraft).where(TicketDraft.task_id == task_id)
+    ).all()
+    parent = next((d for d in drafts if d.ticket_role == "PARENT"), None)
+    children = [d for d in drafts if d.ticket_role == "CHILD"]
+    return parent, children
+
+
+def _build_planner_input(
+    task_id: int,
+    document: RegDocument | None,
+    parent_row: TicketDraft,
+    child_rows: list[TicketDraft],
+) -> ExecutionPlannerInput:
+    reg_doc = RegulatoryDocumentContext(
+        title=document.title if document else "",
+        document_no=document.document_no if document else "",
+        issuing_authority=document.issuing_authority if document else "",
+        published_at=document.published_at if document else "",
+        effective_date=document.effective_date if document else "",
+        first_report_period=document.first_report_period if document else "",
+        regulatory_intent=document.regulatory_intent if document else "",
+    )
+    parent_ctx = ParentTicketContext(
+        title=parent_row.title,
+        change_ticket_type=parent_row.change_ticket_type,
+        severity_level=parent_row.severity_level,
+    )
+    child_ctxs: list[ChildTicketContext] = []
+    for child in child_rows:
+        if child.id is None:
+            continue
+        affected = _safe_json_loads(child.affected_assets, default={})
+        items = affected.get("reporting_items", []) if isinstance(affected, dict) else []
+        item_code = ""
+        item_name = ""
+        table_code = ""
+        if items:
+            first = items[0] if isinstance(items[0], dict) else {}
+            code_full = first.get("code", "") or ""
+            item_name = first.get("name", "") or ""
+            if "." in code_full:
+                table_code, item_code = code_full.split(".", 1)
+            else:
+                table_code = code_full
+        blockers_list = _safe_json_loads(child.blockers, default=[])
+        quality_flags = _safe_json_loads(child.quality_flags, default=[])
+        child_ctxs.append(
+            ChildTicketContext(
+                id=child.id,
+                responsible_system=child.responsible_system or "",
+                table_code=table_code,
+                item_code=item_code,
+                item_name=item_name,
+                change_type=child.action_ticket_type or child.change_ticket_type or "",
+                evidence_text=child.summary or "",
+                blockers=" / ".join(blockers_list) if isinstance(blockers_list, list) else "",
+                quality_issues=" / ".join(quality_flags) if isinstance(quality_flags, list) else "",
+            )
+        )
+    return ExecutionPlannerInput(
+        task_id=task_id,
+        reg_document=reg_doc,
+        parent_ticket=parent_ctx,
+        child_tickets=child_ctxs,
+    )
+
+
+def _safe_json_loads(raw: str, default):
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def _persist_execution_plan(
+    task_id: int,
+    plan_dict: dict,
+    status_value: str,
+    warning: str,
+    session: Session,
+) -> None:
+    row = session.exec(
+        select(RegTaskExecutionPlan).where(RegTaskExecutionPlan.task_id == task_id)
+    ).first()
+    plan_json = json.dumps(plan_dict, ensure_ascii=False, default=str)
+    now = datetime.utcnow()
+    if row is None:
+        row = RegTaskExecutionPlan(
+            task_id=task_id,
+            plan_content=plan_json,
+            status=status_value,
+            confidence=plan_dict.get("confidence", 0.0),
+            needs_human_review=plan_dict.get("needs_human_review", False),
+            warning=warning,
+            generated_at=now,
+            generated_by=plan_dict.get("generated_by", ""),
+            updated_at=now,
+        )
+    else:
+        row.plan_content = plan_json
+        row.status = status_value
+        row.confidence = plan_dict.get("confidence", 0.0)
+        row.needs_human_review = plan_dict.get("needs_human_review", False)
+        row.warning = warning
+        row.generated_at = now
+        row.generated_by = plan_dict.get("generated_by", "")
+        row.updated_at = now
+    session.add(row)
+    session.commit()

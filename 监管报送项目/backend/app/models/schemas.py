@@ -524,3 +524,57 @@ class TaskWorkflowResponse(BaseModel):
     impact_items: list[ReportingImpactItemRead]
     rule_cards: list[RuleCardRead]
     ticket_drafts: list[TicketDraftRead]
+
+
+# ── Module D · 执行规划 API schemas ────────────────────────────────────────
+
+class ExecutionTaskRead(BaseModel):
+    team: str
+    team_zh: str
+    action: str
+    ticket_id: int
+    is_blocker: bool = False
+    blocker_reason: str = ""
+
+
+class ExecutionPhaseRead(BaseModel):
+    phase_name: str
+    tasks: list[ExecutionTaskRead] = []
+
+
+class CriticalRiskRead(BaseModel):
+    severity: str  # HIGH / MEDIUM / LOW
+    description: str
+    ticket_id_ref: int | None = None
+    mitigation: str = ""
+
+
+class ExecutionPlanRead(BaseModel):
+    """与 docs/superpowers/plans/2026-05-28-execution-planner-frontend.md
+    定义的 API 契约严格对齐。"""
+
+    task_id: int
+    executive_summary: str
+    estimated_duration: str
+    execution_phases: list[ExecutionPhaseRead] = []
+    critical_risks: list[CriticalRiskRead] = []
+    team_coordination: str = ""
+    generated_at: datetime
+    generated_by: str
+    confidence: float
+    needs_human_review: bool = False
+
+
+class ExecutionPlanResponse(BaseModel):
+    status: str  # NOT_GENERATED / READY / DEGRADED / STALE
+    plan: ExecutionPlanRead | None = None
+    warning: str = ""
+
+
+class ExecutionPlanFeedbackRequest(BaseModel):
+    thumbs: str  # "up" / "down"
+    comment: str = ""
+
+
+class ExecutionPlanFeedbackResponse(BaseModel):
+    ok: bool = True
