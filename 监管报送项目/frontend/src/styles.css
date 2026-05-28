@@ -829,6 +829,14 @@ h1, h2, h3, h4, p { margin: 0; }
   gap: 20px;
   align-items: start;
 }
+.lineage-sidebar {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .tree {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -852,6 +860,15 @@ h1, h2, h3, h4, p { margin: 0; }
 .tree-node .hit { color: var(--orange-600); font-family: var(--font-mono); font-size: 10.5px; margin-left: auto; }
 .tree-node .chev { width: 12px; display: inline-block; color: var(--ink-300); flex-shrink: 0; }
 .tree-child { padding-left: 18px; border-left: 1px dashed var(--border); margin-left: 14px; }
+.tree-grandchild {
+  margin-left: 18px;
+  padding-left: 12px;
+  border-left: 1px dotted var(--border);
+}
+.tree-node-detail {
+  font-size: 12px;
+  color: var(--ink-500);
+}
 
 .field-detail { display: flex; flex-direction: column; gap: 16px; }
 

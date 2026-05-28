@@ -173,6 +173,229 @@ def test_document_profile_in_scope_tables_come_from_reporting_objects(monkeypatc
     assert profile.should_create_task is True
 
 
+def test_document_profile_revision_insert_marker_with_formula_is_scope_adjustment():
+    signals = document_profiler._parse_change_signals(  # noqa: SLF001
+        {
+            "change_signals": [
+                {
+                    "table_code": "G31",
+                    "section_hint": "第 I 部分",
+                    "indicator_hint": "C.修正久期填报定义/公式",
+                    "change_type": "INSTRUCTION_ADJUST",
+                    "evidence_text": (
+                        "- [新增 | 陈施霖 | 2024-12-20] "
+                        "衡量单笔债券或债券投资组合估值（价格）对到期收益率变化的敏感度指标，"
+                        "计算公式为 MD=-(dP/P)/dy=D/(1+y/k)"
+                    ),
+                    "confidence": 0.95,
+                }
+            ]
+        }
+    )
+
+    assert signals[0].change_type == "SCOPE_ADJUST"
+
+
+def test_document_profile_revision_insert_marker_keeps_explicit_business_add():
+    signals = document_profiler._parse_change_signals(  # noqa: SLF001
+        {
+            "change_signals": [
+                {
+                    "table_code": "G31",
+                    "section_hint": "第 I 部分",
+                    "indicator_hint": "C.修正久期",
+                    "change_type": "INSTRUCTION_ADJUST",
+                    "evidence_text": "- [新增 | 陈施霖 | 2024-12-20] 新增 C 列修正久期。",
+                    "confidence": 0.95,
+                }
+            ]
+        }
+    )
+
+    assert signals[0].change_type == "ADD"
+
+
+def test_document_profile_merges_same_instruction_indicator_fragments():
+    signals = document_profiler._parse_change_signals(  # noqa: SLF001
+        {
+            "change_signals": [
+                {
+                    "table_code": "G31",
+                    "section_hint": "第 I 部分：底层资产投资情况",
+                    "indicator_hint": "C.修正久期",
+                    "change_type": "SCOPE_ADJUST",
+                    "evidence_text": (
+                        "- [新增 | 陈施霖 | 2024-12-20] "
+                        "衡量单笔债券或债券投资组合估值（价格）对到期收益率变化的敏感度指标"
+                    ),
+                    "confidence": 0.91,
+                },
+                {
+                    "table_code": "G31",
+                    "section_hint": "第 I 部分：底层资产投资情况",
+                    "indicator_hint": "C.修正久期填报定义/公式",
+                    "change_type": "INSTRUCTION_ADJUST",
+                    "evidence_text": (
+                        "- [新增 | 陈施霖 | 2024-12-20] "
+                        "MD=-(dP/P)/dy=D/(1+y/k)"
+                    ),
+                    "confidence": 0.95,
+                },
+            ]
+        }
+    )
+
+    assert len(signals) == 1
+    assert signals[0].indicator_hint == "C.修正久期"
+    assert signals[0].change_type == "SCOPE_ADJUST"
+    assert signals[0].confidence == 0.95
+    assert "衡量单笔债券" in signals[0].evidence_text
+    assert "MD=-(dP/P)/dy=D/(1+y/k)" in signals[0].evidence_text
+
+
+def test_document_profile_enriches_scope_signal_with_current_revision_action():
+    signals = [
+        document_profiler.TableChangeSignal(
+            table_code="G31",
+            section_hint="第二部分：一般说明",
+            indicator_hint="填报机构范围",
+            change_type="SCOPE_ADJUST",
+            evidence_text=(
+                "3．填报机构：政策性银行（含开发银行）、大型商业银行（含邮储银行）、"
+                "股份制商业银行、城市商业银行、直销银行、企业集团财务公司。"
+            ),
+            confidence=0.78,
+        )
+    ]
+    document_text = "\n".join(
+        [
+            "## 当前版本修订动作（共 2 条，原始修订共 806 条）",
+            "- [新增 | 陈施霖 | 2024-12-16] 直销银行、",
+            "- [新增 | 周世杰 | 2021-12-09] 、金融资产投资公司",
+            "",
+            "## 填报说明正文",
+            signals[0].evidence_text,
+        ]
+    )
+
+    enriched = document_profiler._enrich_current_revision_action_evidence(  # noqa: SLF001
+        signals,
+        document_text,
+    )
+
+    assert "[新增 | 陈施霖 | 2024-12-16] 直销银行、" in enriched[0].evidence_text
+    assert "金融资产投资公司" not in enriched[0].evidence_text
+    assert "3．填报机构" in enriched[0].evidence_text
+
+
+def test_document_profile_enriches_legacy_revision_tracking_block():
+    signals = [
+        document_profiler.TableChangeSignal(
+            table_code="G31",
+            section_hint="第二部分：一般说明",
+            indicator_hint="填报机构范围",
+            change_type="SCOPE_ADJUST",
+            evidence_text=(
+                "3．填报机构：政策性银行（含开发银行）、大型商业银行（含邮储银行）、"
+                "股份制商业银行、城市商业银行、直销银行、企业集团财务公司、"
+                "金融资产投资公司。"
+            ),
+            confidence=0.78,
+        )
+    ]
+    document_text = "\n".join(
+        [
+            "## 修订追踪（共 806 条）",
+            "- [新增 | 周世杰 | 2021-12-09] 、金融资产投资公司",
+            "- [新增 | 陈施霖 | 2024-12-16] 直销银行、",
+            "",
+            "## 填报说明正文",
+            signals[0].evidence_text,
+        ]
+    )
+
+    enriched = document_profiler._enrich_current_revision_action_evidence(  # noqa: SLF001
+        signals,
+        document_text,
+    )
+
+    assert "[新增 | 陈施霖 | 2024-12-16] 直销银行、" in enriched[0].evidence_text
+    assert "[新增 | 周世杰 | 2021-12-09] 、金融资产投资公司" not in enriched[0].evidence_text
+
+
+def test_document_profile_adds_institution_scope_signal_when_model_misses(monkeypatch):
+    paragraph = (
+        "3．填报机构：政策性银行（含开发银行）、大型商业银行（含邮储银行）、"
+        "股份制商业银行、城市商业银行、直销银行、企业集团财务公司、"
+        "金融资产投资公司。"
+    )
+    document = RegDocument(
+        filename="G31填报说明（251）.doc",
+        storage_path="/tmp/G31填报说明（251）.doc",
+        title="G31 指标变更扫描",
+        parsed_text="\n".join(
+            [
+                "## 修订追踪（共 806 条）",
+                "- [新增 | 周世杰 | 2021-12-09] 、金融资产投资公司",
+                "- [新增 | 陈施霖 | 2024-12-16] 直销银行、",
+                "",
+                "## 填报说明正文",
+                paragraph,
+                "列项目：",
+                "[C. 修正久期] ：衡量单笔债券估值对收益率变化的敏感度指标。",
+            ]
+        ),
+        parse_quality="GOOD",
+    )
+
+    def fake_complete_json(messages):
+        return (
+            {
+                "change_signals": [
+                    {
+                        "table_code": "G31",
+                        "section_hint": "第 I 部分",
+                        "indicator_hint": "C.修正久期",
+                        "change_type": "SCOPE_ADJUST",
+                        "evidence_text": "[C. 修正久期] ：衡量单笔债券估值对收益率变化的敏感度指标。",
+                        "confidence": 0.9,
+                    },
+                    {
+                        "table_code": "G31",
+                        "section_hint": "第 I 部分",
+                        "indicator_hint": "D列期末余额",
+                        "change_type": "MODIFY",
+                        "evidence_text": "是指填报机构因持有非底层资产而间接持有的期末余额。",
+                        "confidence": 0.8,
+                    },
+                ],
+                "reason": "模型仅抽出修正久期。",
+            },
+            '{"ok": true}',
+            "fake-model",
+        )
+
+    monkeypatch.setattr(document_profiler, "complete_json", fake_complete_json)
+
+    profile = document_profiler.generate_document_profile(
+        document,
+        {
+            "reporting_objects": [{"object_code": "G31", "object_name": "投资业务情况表"}],
+            "reporting_sections": [],
+            "reporting_items": [],
+        },
+    )
+
+    institution_signals = [
+        signal for signal in profile.change_signals if signal.indicator_hint == "填报机构范围"
+    ]
+
+    assert len(institution_signals) == 1
+    assert "[新增 | 陈施霖 | 2024-12-16] 直销银行、" in institution_signals[0].evidence_text
+    assert "[新增 | 周世杰 | 2021-12-09] 、金融资产投资公司" not in institution_signals[0].evidence_text
+    assert paragraph in institution_signals[0].evidence_text
+
+
 def test_document_profile_route_uses_in_scope_actionable_signal():
     signals = [
         document_profiler.TableChangeSignal(

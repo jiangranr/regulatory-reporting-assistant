@@ -56,7 +56,7 @@ def test_quality_checker_flags_builder_card_with_empty_asset_lists():
     result = check_ticket_card_quality(card)
 
     assert card.affected_assets == {
-        "reporting_item_codes": [],
+        "reporting_items": [],
         "reporting_fields": [],
         "source_fields": [],
         "lineage_roles": [],

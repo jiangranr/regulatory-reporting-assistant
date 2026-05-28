@@ -13,6 +13,7 @@ from app.models.enums import (
     ActionTicketType,
     ChangeTicketType,
     ResponsibleRole,
+    ResponsibleSystem,
     SeverityLevel,
 )
 from app.services.change_severity_classifier import (
@@ -364,7 +365,12 @@ def build_ticket_plan(
 
     if classification.severity.level == SeverityLevel.L1_TRIVIAL:
         children = [
-            _build_merged_lightweight_child(task_title, impacts, rule_cards_by_key)
+            _build_merged_lightweight_child(
+                task_title,
+                impacts,
+                rule_cards_by_key,
+                historical_cases_by_key,
+            )
         ]
     else:
         triggers = build_ticket_triggers(impacts, document_text=document_text)
@@ -509,7 +515,7 @@ def _render_card_markdown(
         "",
     ]
     asset_lines = [
-        f"- {key}：{', '.join(values[:5])}"
+        f"- {key}：{', '.join(_asset_display_value(value) for value in values[:5])}"
         for key, values in card.affected_assets.items()
         if values
     ]
@@ -563,9 +569,10 @@ def _collect_related_rule_card_codes(
         for value in values:
             if not value:
                 continue
-            keys.append(value)
-            if "." in value:
-                keys.append(value.split(".")[0])
+            code = value.get("code", "") if isinstance(value, dict) else str(value)
+            keys.append(code)
+            if "." in code:
+                keys.append(code.split(".")[0])
     seen: set[str] = set()
     codes: list[str] = []
     for key in keys:
@@ -578,12 +585,33 @@ def _collect_related_rule_card_codes(
     return codes
 
 
+def _asset_display_value(value) -> str:
+    if isinstance(value, dict):
+        code = str(value.get("code") or "").strip()
+        name = str(value.get("name") or "").strip()
+        if code and name and code != name:
+            return f"{name}（{code}）"
+        return name or code
+    return str(value)
+
+
 def _build_merged_lightweight_child(
     task_title: str,
     impacts: list[ReportingImpactDraft],
     rule_cards_by_key: dict[str, list[dict]] | None = None,
+    historical_cases_by_key: dict[str, list[dict]] | None = None,
 ) -> ChildTicketPlan:
     spec = _ACTION_SPECS[ActionTicketType.MERGED_LIGHTWEIGHT]
+    impact_codes = [i.reporting_item_code for i in impacts if i.reporting_item_code]
+    trigger = TicketTrigger(
+        action_type=ActionTicketType.MERGED_LIGHTWEIGHT,
+        responsible_system=ResponsibleSystem.REG_REPORTING_SYSTEM,
+        trigger_reasons=["L1_LIGHTWEIGHT_MERGED_TICKET"],
+        related_impact_codes=impact_codes,
+    )
+    historical_cases = _historical_cases_for_impacts(impacts, historical_cases_by_key or {})
+    card = build_ticket_card(trigger, impacts, historical_cases=historical_cases)
+    quality = check_ticket_card_quality(card)
     cards_block = _rule_cards_block(impacts, rule_cards_by_key or {})
     content = (
         "## 工单说明\n\n"
@@ -601,7 +629,9 @@ def _build_merged_lightweight_child(
         title=f"{task_title}｜L1 合并轻量工单",
         spec=spec,
         content_markdown=content + cards_block,
-        related_impact_codes=[i.reporting_item_code for i in impacts if i.reporting_item_code],
+        related_impact_codes=impact_codes,
+        card=card,
+        quality=quality,
     )
 
 

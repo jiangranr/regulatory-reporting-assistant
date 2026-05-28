@@ -7,6 +7,7 @@ from app.services.instruction_parser import (
     HighlightFragment,
     InstructionParseResult,
     RevisionFragment,
+    current_version_revisions,
 )
 from app.services.llm_client import LLMClientError, complete_json
 
@@ -45,7 +46,7 @@ async def analyze_instruction_changes(
     调用 LLM 输出"此版本填报说明相对上一版本有哪些变更需注意"。
     """
     comments = instruction.comments
-    revisions = instruction.revisions
+    revisions = current_version_revisions(instruction.revisions)
     highlights = instruction.highlights
 
     messages = [
@@ -53,7 +54,7 @@ async def analyze_instruction_changes(
             "role": "system",
             "content": (
                 "你是银行监管报表数据治理专家。你只输出JSON，不输出Markdown。"
-                "任务：根据 Word 批注、修订追踪和重点标注，总结本版本填报说明相对上一版本的变更。"
+                "任务：根据 Word 批注、当前版本修订动作和重点标注，总结本版本填报说明相对上一版本的变更。"
                 "变更类型包括：统计口径调整、填报方法变化、指标新增/删除、填报范围变化、其他注意事项。"
                 "evidence 必须直接引用原文或批注原话，不得编造。"
             ),
@@ -123,7 +124,7 @@ def _build_prompt(
     revision_block = "\n".join(
         f"- [{'新增' if r.change_type == 'INSERT' else '删除'} | {r.author} | {r.date[:10] if r.date else ''}] {r.text}"
         for r in revisions[:80]
-    ) or "（无修订追踪）"
+    ) or "（无当前版本修订动作）"
 
     highlight_block = "\n".join(
         f"- [{h.color}] {h.text}" for h in highlights[:60]
@@ -137,7 +138,7 @@ def _build_prompt(
 === 文档批注（共 {len(comments)} 条）===
 {comment_block}
 
-=== 修订追踪（共 {len(revisions)} 条）===
+=== 当前版本修订动作（共 {len(revisions)} 条，已过滤历史修订追踪）===
 {revision_block}
 
 === 彩色重点片段（共 {len(highlights)} 条）===

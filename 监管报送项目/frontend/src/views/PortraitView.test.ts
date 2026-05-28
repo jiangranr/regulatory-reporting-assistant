@@ -59,6 +59,82 @@ const profile: DocumentTaskProfile = {
 };
 
 describe("PortraitView", () => {
+  it("shows business signal count separately from impacted reporting item count", () => {
+    const profileWithSignals: DocumentTaskProfile = {
+      ...profile,
+      change_signals: [
+        {
+          table_code: "G31",
+          section_hint: "PART_I",
+          indicator_hint: "修正久期",
+          change_type: "MODIFY",
+          evidence_text: "修正久期定义调整",
+          confidence: 0.9,
+          evidence_verified: true,
+        },
+        {
+          table_code: "G31",
+          section_hint: "PART_I",
+          indicator_hint: "填报机构范围",
+          change_type: "SCOPE_ADJUST",
+          evidence_text: "填报机构范围调整",
+          confidence: 0.88,
+          evidence_verified: true,
+        },
+      ],
+    };
+    const wrapper = mount(PortraitView, {
+      props: {
+        documents: [document],
+        selectedDocumentId: document.id,
+        selectedProfile: profileWithSignals,
+        impactItemCount: 15,
+        instructionAnalysis: null,
+        analysisBusy: false,
+        workflow: null,
+        busy: false,
+        profileBusy: false,
+        profileScanMessage: "",
+      },
+    });
+
+    expect(wrapper.text()).toContain("业务变更信号：2 个");
+    expect(wrapper.text()).toContain("影响指标格：15 个");
+  });
+
+  it("shows revision-tracked inserted formula evidence as scope adjustment", () => {
+    const profileWithInsertedInstruction: DocumentTaskProfile = {
+      ...profile,
+      change_signals: [
+        {
+          table_code: "G31",
+          section_hint: "PART_I",
+          indicator_hint: "C.修正久期填报定义/公式",
+          change_type: "INSTRUCTION_ADJUST",
+          evidence_text: "- [新增 | 陈施霖 | 2024-12-20] MD=-(dP/P)/dy=D/(1+y/k)",
+          confidence: 0.95,
+          evidence_verified: true,
+        },
+      ],
+    };
+    const wrapper = mount(PortraitView, {
+      props: {
+        documents: [document],
+        selectedDocumentId: document.id,
+        selectedProfile: profileWithInsertedInstruction,
+        instructionAnalysis: null,
+        analysisBusy: false,
+        workflow: null,
+        busy: false,
+        profileBusy: false,
+        profileScanMessage: "",
+      },
+    });
+
+    expect(wrapper.find("tbody").text()).toContain("口径调整");
+    expect(wrapper.find("tbody").text()).not.toContain("说明调整");
+  });
+
   it("keeps rescan clickable while non-profile background work is busy", async () => {
     const wrapper = mount(PortraitView, {
       props: {

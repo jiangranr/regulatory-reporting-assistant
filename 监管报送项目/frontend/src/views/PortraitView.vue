@@ -69,7 +69,8 @@
           <div class="sec-h">
             <h2>1104 指标变更扫描</h2>
             <span class="line"></span>
-            <span class="count">{{ profile.change_signals.length }} 个变更信号</span>
+            <span class="count">业务变更信号：{{ businessSignalCount }} 个</span>
+            <span v-if="hasImpactItemCount" class="count">影响指标格：{{ impactItemCount }} 个</span>
           </div>
 
           <!-- 涉及表号 -->
@@ -111,7 +112,7 @@
                 <td style="color:var(--ink-600);font-size:12px;">{{ sig.section_hint || "-" }}</td>
                 <td style="font-weight:500;">{{ sig.indicator_hint || "-" }}</td>
                 <td>
-                  <span :class="['tag', changeTypeColor(sig.change_type)]">{{ changeTypeLabel(sig.change_type) }}</span>
+                  <span :class="['tag', changeTypeColor(effectiveChangeType(sig))]">{{ changeTypeLabel(effectiveChangeType(sig)) }}</span>
                 </td>
                 <td>
                   <span class="confidence">
@@ -185,7 +186,8 @@
             </div>
             <div style="flex:1;font-size:12px;color:var(--ink-600);line-height:1.6;">
               <div><b style="color:var(--ink-900);">范围内报表</b> · {{ profile.in_scope_tables.join(" / ") || "-" }}</div>
-              <div><b style="color:var(--ink-900);">变更信号数</b> · {{ profile.change_signals.length }}</div>
+              <div><b style="color:var(--ink-900);">业务变更信号</b> · {{ businessSignalCount }}</div>
+              <div v-if="hasImpactItemCount"><b style="color:var(--ink-900);">影响指标格</b> · {{ impactItemCount }}</div>
               <div><b style="color:var(--ink-900);">处理建议</b> · {{ routeLabel(profile.suggested_route) }}</div>
             </div>
           </div>
@@ -401,6 +403,7 @@ import type {
   DocumentTaskProfile,
   InstructionChangeAnalysis,
   RegDocument,
+  TableChangeSignal,
   TaskWorkflow,
   TableChangeType,
 } from "@/types/api";
@@ -409,6 +412,7 @@ const props = defineProps<{
   documents: RegDocument[];
   selectedDocumentId: number | null;
   selectedProfile: DocumentTaskProfile | null;
+  impactItemCount?: number | null;
   instructionAnalysis: InstructionChangeAnalysis | null;
   analysisBusy: boolean;
   workflow: TaskWorkflow | null;
@@ -429,6 +433,8 @@ const doc = computed(() =>
   props.documents.find((item) => item.id === props.selectedDocumentId) ?? props.workflow?.document ?? null
 );
 const profile = computed(() => props.selectedProfile ?? props.workflow?.document_profile ?? null);
+const businessSignalCount = computed(() => profile.value?.change_signals.length ?? 0);
+const hasImpactItemCount = computed(() => typeof props.impactItemCount === "number");
 const showRawText = ref(false);
 const rawTextBusy = ref(false);
 const rawDialogText = ref("");
@@ -478,6 +484,17 @@ const changeTypeLabel = (t: TableChangeType): string =>
 
 const changeTypeColor = (t: TableChangeType): string =>
   ({ ADD: "green", MODIFY: "amber", DELETE: "red", SCOPE_ADJUST: "amber", INSTRUCTION_ADJUST: "blue", UNCLEAR: "outline" } as Record<string, string>)[t] ?? "outline";
+
+function effectiveChangeType(signal: TableChangeSignal): TableChangeType {
+  if (["INSTRUCTION_ADJUST", "UNCLEAR"].includes(signal.change_type)) {
+    const body = (signal.evidence_text || "").replace(/-?\s*\[\s*(?:新增|删除)\s*\|[^\]]+\]\s*/g, "").trim();
+    const businessText = `${signal.indicator_hint || ""} ${body}`;
+    if (/\[\s*新增\s*\|/.test(signal.evidence_text || "") && /新增\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)/.test(body)) return "ADD";
+    if (/\[\s*删除\s*\|/.test(signal.evidence_text || "") && /(?:删除|停报)\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)/.test(body)) return "DELETE";
+    if (/(定义|公式|计算|口径|范围|填报|统计)/.test(businessText)) return "SCOPE_ADJUST";
+  }
+  return signal.change_type;
+}
 
 const routeLabel = (r: string): string =>
   ({ FULL_ANALYSIS: "完整流程", LIGHTWEIGHT_ARCHIVE: "轻量归档", MANUAL_REVIEW: "人工复核", SKIP: "跳过" } as Record<string, string>)[r] ?? r;

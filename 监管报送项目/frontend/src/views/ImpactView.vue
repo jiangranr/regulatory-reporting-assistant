@@ -79,7 +79,7 @@
       <div class="sec-h">
         <h2>影响项清单</h2>
         <span class="line"></span>
-        <span class="count">{{ impacts.length }} 项</span>
+        <span class="count">{{ displayImpacts.length }} 组 / {{ impacts.length }} 项</span>
         <button v-if="!impacts.length" class="btn primary sm" :disabled="busy" @click="$emit('analyze')">
           {{ busy ? "分析中…" : "开始影响分析" }}
         </button>
@@ -99,17 +99,73 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(item, i) in impacts" :key="i">
+          <tr v-for="(item, i) in displayImpacts" :key="item.aggregate_key ?? item.reporting_item_code ?? i">
             <td class="mono" style="color:var(--ink-400);">{{ padIdx(i) }}</td>
             <td>
-              <div style="font-weight:500;color:var(--ink-900);">{{ item.impacted_reporting_field || item.reporting_item_code }}</div>
-              <div v-if="item.reporting_item_code" class="mono" style="font-size:11px;color:var(--ink-400);margin-top:2px;">{{ item.reporting_item_code }}</div>
+              <div style="font-weight:500;color:var(--ink-900);">{{ item.aggregate_title || item.impacted_reporting_field || item.reporting_item_code }}</div>
+              <div v-if="item.aggregate_rows?.length" class="impact-rows">
+                影响行：{{ item.aggregate_rows.join("、") }}
+              </div>
+              <div v-if="item.aggregate_item_codes?.length" class="mono impact-code-line">
+                {{ item.aggregate_item_codes.length > 1 ? `${item.aggregate_item_codes.length} 个报表 cell` : item.aggregate_item_codes[0] }}
+              </div>
+              <div v-else-if="item.reporting_item_code" class="mono impact-code-line">{{ item.reporting_item_code }}</div>
             </td>
             <td><span class="tag outline">{{ item.impact_type }}</span></td>
             <td>
-              <div class="radius-cell" :title="fieldListTooltip(item)">
-                <span class="radius-badge sys">{{ systemCount(item) }} 系统</span>
-                <span class="radius-badge fld">{{ fieldCount(item) }} 字段</span>
+              <div class="radius-popover">
+                <div
+                  :class="['radius-cell', { 'radius-cell-unmapped': !hasMappedLineage(item) }]"
+                  :title="radiusTooltip(item)"
+                  :aria-label="radiusAriaLabel(item)"
+                  tabindex="0"
+                  data-test="impact-radius-trigger"
+                >
+                  <template v-if="hasMappedLineage(item)">
+                    <span class="radius-badge sys">{{ systemCount(item) }} 系统</span>
+                    <span class="radius-badge fld">{{ fieldCount(item) }} 字段</span>
+                  </template>
+                  <template v-else>
+                    <span class="radius-badge unmapped">血缘未配置</span>
+                    <span class="radius-badge pending">待补映射</span>
+                  </template>
+                </div>
+
+                <div
+                  v-if="hasMappedLineage(item)"
+                  class="radius-panel"
+                  role="tooltip"
+                  data-test="impact-radius-panel"
+                >
+                  <div class="radius-panel-title">系统与字段范围</div>
+                  <div
+                    v-for="group in impactRadiusGroups(item)"
+                    :key="group.systemKey"
+                    class="radius-system"
+                  >
+                    <div class="radius-system-head">
+                      <span class="radius-system-name">{{ group.systemName }}</span>
+                      <span v-if="group.systemCode" class="radius-system-code mono">{{ group.systemCode }}</span>
+                      <span class="radius-system-count">{{ group.fields.length }} 字段</span>
+                    </div>
+                    <div class="radius-field-list">
+                      <div
+                        v-for="field in group.fields"
+                        :key="field.fieldCode"
+                        class="radius-field-row"
+                      >
+                        <div class="radius-field-main">
+                          <span class="radius-field-name">{{ field.fieldName }}</span>
+                          <span v-if="field.roleLabel" :class="['role-chip', field.roleClass]">{{ field.roleLabel }}</span>
+                        </div>
+                        <div class="radius-field-code mono">{{ field.fieldCode }}</div>
+                        <div v-if="field.tableName || field.columnName" class="radius-field-meta">
+                          {{ [field.tableName, field.columnName].filter(Boolean).join(".") }}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </td>
             <td>
@@ -163,7 +219,7 @@
               <span class="tag orange mono" style="font-size:12px;">{{ s.table_code }}</span>
               <span style="margin-left:8px;font-weight:500;">{{ s.indicator_hint || s.section_hint }}</span>
             </td>
-            <td><span :class="['tag', changeTypeColor(s.change_type)]">{{ changeTypeLabel(s.change_type) }}</span></td>
+            <td><span :class="['tag', changeTypeColor(effectiveChangeType(s))]">{{ changeTypeLabel(effectiveChangeType(s)) }}</span></td>
             <td style="font-size:12px;color:var(--ink-600);">报送字段 / 口径调整 / 校验规则</td>
             <td><span class="tag amber"><span class="dot"></span>中</span></td>
           </tr>
@@ -191,6 +247,31 @@ import type {
   TaskWorkflow,
 } from "@/types/api";
 
+interface DisplayImpactItem extends Record<string, any> {
+  aggregate_key?: string;
+  aggregate_title?: string;
+  aggregate_rows?: string[];
+  aggregate_item_codes?: string[];
+}
+
+interface RadiusFieldDetail {
+  fieldCode: string;
+  fieldName: string;
+  systemName: string;
+  systemCode: string;
+  tableName: string;
+  columnName: string;
+  roleLabel: string;
+  roleClass: string;
+}
+
+interface RadiusSystemGroup {
+  systemKey: string;
+  systemName: string;
+  systemCode: string;
+  fields: RadiusFieldDetail[];
+}
+
 const props = defineProps<{
   workflow: TaskWorkflow | null;
   busy: boolean;
@@ -200,22 +281,20 @@ const emit = defineEmits<{ continue: []; back: []; analyze: []; "view-lineage": 
 
 // Backend impact items (if available)
 const impacts = computed(() => (props.workflow as any)?.impact_items ?? []);
+const displayImpacts = computed<DisplayImpactItem[]>(() => aggregateImpactsForDisplay(impacts.value, props.workflow));
+const fieldMetadataByCode = computed(() => buildFieldMetadataByCode(props.workflow));
 
 // ── 建议 1：影响半径聚合 ────────────────────────────────────
 // 不再把原始字段列表堆在表格里。改成"N 系统 / N 字段 + 角色徽章"。
 // 原始字段通过 tooltip 暴露，需要细节时鼠标悬停看。
 function systemCount(item: any): number {
-  const fields = (item.impacted_source_fields ?? []) as string[];
-  const systems = new Set<string>();
-  for (const f of fields) {
-    // field code 形如 "table.column"，取 table 作为系统层标识；如有 schema 前缀则再切一层
-    const tbl = (f.split(".")[0] || "").trim();
-    if (tbl) systems.add(tbl);
-  }
-  return systems.size;
+  return impactRadiusGroups(item).length;
 }
 function fieldCount(item: any): number {
-  return (item.impacted_source_fields ?? []).length;
+  return impactRadiusGroups(item).reduce((sum, group) => sum + group.fields.length, 0);
+}
+function hasMappedLineage(item: any): boolean {
+  return fieldCount(item) > 0 || roleChips(item).length > 0 || Boolean(item.impacted_reporting_field);
 }
 function roleChips(item: any): { key: string; label: string; cls: string }[] {
   const roles: string[] = item.impacted_lineage_roles ?? [];
@@ -229,8 +308,195 @@ function roleChips(item: any): { key: string; label: string; cls: string }[] {
     .filter((r) => r in map)
     .map((r) => ({ key: r, label: map[r].label, cls: map[r].cls }));
 }
-function fieldListTooltip(item: any): string {
-  return ((item.impacted_source_fields ?? []) as string[]).join("\n");
+function radiusTooltip(item: any): string {
+  const groups = impactRadiusGroups(item);
+  if (groups.length) {
+    return groups
+      .map((group) => `${group.systemName}：${group.fields.map((field) => field.fieldCode).join("、")}`)
+      .join("\n");
+  }
+  const codes = item.aggregate_item_codes?.length ? item.aggregate_item_codes.join("\n") : item.reporting_item_code ?? "";
+  return `当前指标未查到字段血缘映射；这表示元数据未覆盖，不代表业务上没有影响。\n${codes}`;
+}
+function radiusAriaLabel(item: any): string {
+  if (!hasMappedLineage(item)) return "影响半径：血缘未配置，待补映射";
+  return `查看影响半径明细：${systemCount(item)} 个系统，${fieldCount(item)} 个字段`;
+}
+
+function impactRadiusGroups(item: any): RadiusSystemGroup[] {
+  const fieldCodes = uniqueNonEmpty([
+    ...(item.impacted_source_fields ?? []),
+    item.impacted_reporting_field,
+  ]);
+  const groups = new Map<string, RadiusSystemGroup>();
+
+  for (const fieldCode of fieldCodes) {
+    const meta = fieldMetadataByCode.value.get(fieldCode);
+    const systemName = meta?.system_name || inferSystemName(fieldCode);
+    const systemCode = meta?.system_code || "";
+    const systemKey = systemCode || systemName;
+    const tableName = meta?.table_name || inferTableName(fieldCode);
+    const columnName = meta?.column_name || inferColumnName(fieldCode);
+    const role = roleMeta(meta?.lineage_role || "");
+
+    if (!groups.has(systemKey)) {
+      groups.set(systemKey, {
+        systemKey,
+        systemName,
+        systemCode,
+        fields: [],
+      });
+    }
+    groups.get(systemKey)!.fields.push({
+      fieldCode,
+      fieldName: meta?.field_name || meta?.business_meaning || columnName || fieldCode,
+      systemName,
+      systemCode,
+      tableName,
+      columnName,
+      roleLabel: role.label,
+      roleClass: role.cls,
+    });
+  }
+
+  return [...groups.values()];
+}
+
+function buildFieldMetadataByCode(wf: TaskWorkflow | null): Map<string, Record<string, any>> {
+  const byCode = new Map<string, Record<string, any>>();
+  for (const mapping of wf?.field_mappings ?? []) {
+    if (mapping.field_code) byCode.set(mapping.field_code, mapping as unknown as Record<string, any>);
+  }
+  for (const field of wf?.lineage_candidates ?? []) {
+    if (!field.field_code || byCode.has(field.field_code)) continue;
+    byCode.set(field.field_code, field as unknown as Record<string, any>);
+  }
+  return byCode;
+}
+
+function inferSystemName(fieldCode: string): string {
+  return inferTableName(fieldCode) || fieldCode || "未知系统";
+}
+
+function inferTableName(fieldCode: string): string {
+  return String(fieldCode || "").split(".")[0] || "";
+}
+
+function inferColumnName(fieldCode: string): string {
+  const parts = String(fieldCode || "").split(".");
+  return parts.length > 1 ? parts.slice(1).join(".") : "";
+}
+
+function roleMeta(role: string): { label: string; cls: string } {
+  const map: Record<string, { label: string; cls: string }> = {
+    SOURCE_FIELD: { label: "来源", cls: "role-source" },
+    DIMENSION_FIELD: { label: "维度", cls: "role-dim" },
+    FILTER_FIELD: { label: "过滤", cls: "role-filter" },
+    REPORT_FIELD: { label: "报送", cls: "role-report" },
+  };
+  return map[role] ?? { label: "", cls: "" };
+}
+
+function aggregateImpactsForDisplay(items: any[], wf: TaskWorkflow | null): DisplayImpactItem[] {
+  const signalByItemCode = new Map<string, { row: string; column: string }>();
+  for (const signal of wf?.document_profile?.change_signals ?? []) {
+    if (!signal.matched_item_code) continue;
+    const parsed = parseIndicatorHint(signal.indicator_hint);
+    if (parsed.column || parsed.row) signalByItemCode.set(signal.matched_item_code, parsed);
+  }
+
+  const groups = new Map<string, DisplayImpactItem[]>();
+  for (const item of items) {
+    const signal = signalByItemCode.get(item.reporting_item_code);
+    const column = normalizeColumnLabel(
+      signal?.column || parseColumnFromCode(item.reporting_item_code) || item.impacted_reporting_field || item.reporting_item_code,
+    );
+    const lineageState = hasMappedLineage(item) ? "mapped" : "unmapped";
+    const groupKey = [item.impact_type, item.risk_level, item.confidence_level, lineageState, column].join("|");
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey)!.push(item);
+  }
+
+  const result: DisplayImpactItem[] = [];
+  for (const [key, group] of groups) {
+    const first = group[0];
+    const rows = uniqueNonEmpty(
+      group.map((item) => signalByItemCode.get(item.reporting_item_code)?.row || parseRowFromCode(item.reporting_item_code)),
+    );
+    const codes = uniqueNonEmpty(group.map((item) => item.reporting_item_code));
+    const sourceFields = uniqueNonEmpty(group.flatMap((item) => item.impacted_source_fields ?? []));
+    const roles = uniqueNonEmpty(group.flatMap((item) => item.impacted_lineage_roles ?? []));
+    const column = normalizeColumnLabel(
+      signalByItemCode.get(first.reporting_item_code)?.column
+        || parseColumnFromCode(first.reporting_item_code)
+        || first.impacted_reporting_field
+        || first.reporting_item_code,
+    );
+    result.push({
+      ...first,
+      aggregate_key: key,
+      aggregate_title: column,
+      aggregate_rows: rows,
+      aggregate_item_codes: codes,
+      impacted_source_fields: sourceFields,
+      impacted_lineage_roles: roles,
+      impacted_reporting_field: first.impacted_reporting_field || "",
+      impact_reason: group.map((item) => item.impact_reason).join("\n"),
+    });
+  }
+  return result;
+}
+
+function parseIndicatorHint(hint?: string): { row: string; column: string } {
+  const text = (hint ?? "").trim();
+  const parts = text.split("×");
+  if (parts.length >= 2) {
+    return {
+      row: normalizeRowLabel(parts[0]),
+      column: normalizeColumnLabel(parts.slice(1).join("×")),
+    };
+  }
+  return { row: "", column: "" };
+}
+
+function parseColumnFromCode(code?: string): string {
+  const raw = String(code ?? "").split(".").slice(3).join(".");
+  if (!raw) return "";
+  const match = raw.match(/^\d+_0\.(.+)$/);
+  const tail = match?.[1] ?? raw;
+  if (tail.startsWith("单位_万元_E_")) return `E·${tail.replace(/^单位_万元_E_/, "").replaceAll("_", "·")}`;
+  return tail.replace("_", "·").replaceAll("_", "");
+}
+
+function parseRowFromCode(code?: string): string {
+  const match = String(code ?? "").match(/\.([0-9]+)_0\./);
+  return match ? `${match[1]}.0` : "";
+}
+
+function normalizeRowLabel(value?: string): string {
+  return String(value ?? "").replace(/\s+/g, "").trim();
+}
+
+function normalizeColumnLabel(value?: string): string {
+  return String(value ?? "")
+    .replace(/\s+/g, "")
+    .replace(/·（/g, "（")
+    .replace(/^单位：万元·E·/, "E·")
+    .replace(/^单位_万元_E_/, "E·")
+    .replaceAll("_", "·")
+    .trim();
+}
+
+function uniqueNonEmpty(values: Array<unknown>): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result;
 }
 
 // ── 建议 2：跳转字段定位 ────────────────────────────────────
@@ -367,15 +633,38 @@ const changeTypeLabel = (t: TableChangeType): string =>
 function padIdx(i: unknown): string { return String(Number(i) + 1).padStart(2, "0"); }
 const changeTypeColor = (t: TableChangeType): string =>
   ({ ADD: "green", MODIFY: "amber", DELETE: "red", SCOPE_ADJUST: "amber", INSTRUCTION_ADJUST: "blue", UNCLEAR: "outline" } as Record<string, string>)[t] ?? "outline";
+
+function effectiveChangeType(signal: { change_type: TableChangeType; evidence_text?: string; indicator_hint?: string }): TableChangeType {
+  if (["INSTRUCTION_ADJUST", "UNCLEAR"].includes(signal.change_type)) {
+    const body = (signal.evidence_text || "").replace(/-?\s*\[\s*(?:新增|删除)\s*\|[^\]]+\]\s*/g, "").trim();
+    const businessText = `${signal.indicator_hint || ""} ${body}`;
+    if (/\[\s*新增\s*\|/.test(signal.evidence_text || "") && /新增\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)/.test(body)) return "ADD";
+    if (/\[\s*删除\s*\|/.test(signal.evidence_text || "") && /(?:删除|停报)\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)/.test(body)) return "DELETE";
+    if (/(定义|公式|计算|口径|范围|填报|统计)/.test(businessText)) return "SCOPE_ADJUST";
+  }
+  return signal.change_type;
+}
 </script>
 
 <style scoped>
 /* ── 影响半径单元格 ─ */
+.radius-popover {
+  position: relative;
+  display: inline-block;
+}
 .radius-cell {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 4px;
   cursor: help;
+  outline: none;
+  border-radius: 7px;
+}
+.radius-cell:focus-visible {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.22);
+}
+.radius-cell-unmapped {
+  max-width: 160px;
 }
 .radius-badge {
   font-size: 12px;
@@ -394,6 +683,115 @@ const changeTypeColor = (t: TableChangeType): string =>
   background: rgba(59, 130, 246, 0.08);
   border-color: rgba(59, 130, 246, 0.25);
   color: rgba(29, 78, 216, 1);
+}
+.radius-badge.unmapped {
+  background: rgba(100, 116, 139, 0.08);
+  border-color: rgba(100, 116, 139, 0.25);
+  color: rgba(71, 85, 105, 1);
+}
+.radius-badge.pending {
+  background: rgba(234, 84, 4, 0.08);
+  border-color: rgba(234, 84, 4, 0.22);
+  color: rgba(194, 65, 12, 1);
+}
+.radius-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  width: min(420px, 76vw);
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.16);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.radius-popover:hover .radius-panel,
+.radius-popover:focus-within .radius-panel {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+.radius-panel-title {
+  color: var(--ink-900);
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 9px;
+}
+.radius-system + .radius-system {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.radius-system-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-bottom: 6px;
+}
+.radius-system-name {
+  color: var(--ink-900);
+  font-size: 12px;
+  font-weight: 650;
+}
+.radius-system-code,
+.radius-system-count {
+  color: var(--ink-500);
+  font-size: 11px;
+}
+.radius-system-count {
+  margin-left: auto;
+}
+.radius-field-list {
+  display: grid;
+  gap: 6px;
+}
+.radius-field-row {
+  padding: 7px 8px;
+  background: var(--surface-alt);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 6px;
+}
+.radius-field-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.radius-field-name {
+  color: var(--ink-800);
+  font-size: 12px;
+  font-weight: 550;
+}
+.radius-field-code {
+  margin-top: 3px;
+  color: var(--ink-600);
+  font-size: 11px;
+  word-break: break-all;
+}
+.radius-field-meta {
+  margin-top: 2px;
+  color: var(--ink-400);
+  font-size: 11px;
+}
+.impact-rows {
+  color: var(--ink-600);
+  font-size: 12px;
+  line-height: 1.55;
+  margin-top: 5px;
+  max-width: 620px;
+}
+.impact-code-line {
+  color: var(--ink-400);
+  font-size: 11px;
+  margin-top: 3px;
 }
 
 /* ── 血缘角色徽章 ─ */

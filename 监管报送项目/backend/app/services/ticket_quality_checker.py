@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from app.services.ticket_card_builder import TicketTaskCard
 
 _EXPECTED_AFFECTED_ASSET_KEYS = (
-    "reporting_item_codes",
+    "reporting_items",
     "reporting_fields",
     "source_fields",
     "lineage_roles",

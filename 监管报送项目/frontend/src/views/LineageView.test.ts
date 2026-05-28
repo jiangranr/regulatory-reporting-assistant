@@ -104,6 +104,16 @@ function workflowWithSignal(signal: Partial<TableChangeSignal>): TaskWorkflow {
 }
 
 describe("LineageView", () => {
+  it("renders the report catalog in a sticky sidebar region", () => {
+    const wrapper = mount(LineageView, {
+      props: { workflow: workflowWithSignal({}) },
+      global: { stubs: { LineageGraph: true } },
+    });
+
+    expect(wrapper.find(".lineage-sidebar").exists()).toBe(true);
+    expect(wrapper.find(".lineage-sidebar .tree").text()).toContain("1104 报表目录");
+  });
+
   it("does not show whole-table lineage when a revision signal is explicitly unmatched", () => {
     const wrapper = mount(LineageView, {
       props: { workflow: workflowWithSignal({}) },
@@ -128,6 +138,53 @@ describe("LineageView", () => {
     });
 
     expect(wrapper.text()).toContain("G31穿透前期末余额");
+  });
+
+  it("groups revision signals by business metric and keeps product details expandable", async () => {
+    const workflow = workflowWithSignal({
+      indicator_hint: "资产支持证券 × B·投资收入（年初至报告期末数）",
+      matched_item_code: "G31.PART_I.13_0.B_投资收入_年初至报告期末数",
+    });
+    workflow.document_profile!.change_signals.push(
+      {
+        table_code: "G31",
+        section_hint: "PART_I",
+        indicator_hint: "其中：1.8.1信贷资产证券化 × B·投资收入（年初至报告期末数）",
+        change_type: "DELETE",
+        evidence_text: "信贷资产证券化投资收入删除",
+        confidence: 0.8,
+        evidence_verified: true,
+        matched_item_code: "G31.PART_I.14_0.B_投资收入_年初至报告期末数",
+      },
+      {
+        table_code: "G31",
+        section_hint: "PART_I",
+        indicator_hint: "交易所资产支持证券 × B·投资收入（年初至报告期末数）",
+        change_type: "DELETE",
+        evidence_text: "交易所资产支持证券投资收入删除",
+        confidence: 0.8,
+        evidence_verified: true,
+        matched_item_code: "G31.PART_I.15_0.B_投资收入_年初至报告期末数",
+      },
+    );
+
+    const wrapper = mount(LineageView, {
+      props: { workflow },
+      global: { stubs: { LineageGraph: true } },
+    });
+
+    expect(wrapper.text()).toContain("G31.1 B·投资收入（年初至报告期末数）");
+    expect(wrapper.find(".tree").text()).toContain("+3");
+    expect(wrapper.find(".tree").text()).not.toContain("G31.1 资产支持证券 × B·投资收入");
+
+    const metricNode = wrapper
+      .findAll(".tree-node")
+      .find((node) => node.text().includes("G31.1 B·投资收入（年初至报告期末数）"));
+    expect(metricNode).toBeTruthy();
+    await metricNode!.trigger("click");
+
+    expect(wrapper.find(".tree").text()).toContain("资产支持证券 × B·投资收入（年初至报告期末数）");
+    expect(wrapper.find(".tree").text()).toContain("其中：1.8.1信贷资产证券化 × B·投资收入（年初至报告期末数）");
   });
 
   it("focuses the exact matched signal when opened from an impact item code", () => {
@@ -172,6 +229,55 @@ describe("LineageView", () => {
     expect(wrapper.find(".field-detail h3").text()).toContain("穿透后期末余额");
     expect(wrapper.text()).toContain("投资持仓余额");
     expect(wrapper.find(".field-detail").text()).not.toContain("修正久期");
+  });
+
+  it("formats tracked-change evidence into readable action rows", () => {
+    const wrapper = mount(LineageView, {
+      props: {
+        workflow: workflowWithSignal({
+          indicator_hint: "C.修正久期",
+          evidence_text: [
+            "- [新增 | 陈施霖 | 2024-11-22] [C.",
+            "- [新增 | 陈施霖 | 2024-11-22] 修正久期",
+            "- [新增 | 陈施霖 | 2024-11-22] ]",
+            "- [新增 | 陈施霖 | 2024-12-20] MD=-(dP/P)/dy=D/(1+y/k)",
+          ].join("；"),
+          confidence: 0.96,
+        }),
+      },
+      global: { stubs: { LineageGraph: true } },
+    });
+
+    const rows = wrapper.findAll(".evidence-row");
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0].find(".evidence-meta").text()).toContain("新增 · 陈施霖 · 2024-11-22");
+    expect(rows[0].find(".evidence-body").text()).toContain("C. 修正久期");
+    expect(rows[0].find(".evidence-body").text()).not.toContain("[新增");
+    expect(rows[1].find(".evidence-meta").text()).toContain("新增 · 陈施霖 · 2024-12-20");
+    expect(rows[1].find(".evidence-body").text()).toContain("MD=-(dP/P)/dy=D/(1+y/k)");
+  });
+
+  it("surfaces the changed institution from a scope paragraph", () => {
+    const wrapper = mount(LineageView, {
+      props: {
+        workflow: workflowWithSignal({
+          indicator_hint: "填报机构范围",
+          evidence_text: [
+            "[新增 | 陈施霖 | 2024-12-16] 直销银行、",
+            "3．填报机构：政策性银行（含开发银行）、大型商业银行（含邮储银行）、股份制商业银行、城市商业银行、直销银行、企业集团财务公司。",
+          ].join("；"),
+          confidence: 0.78,
+        }),
+      },
+      global: { stubs: { LineageGraph: true } },
+    });
+
+    const rows = wrapper.findAll(".evidence-row");
+
+    expect(rows[0].find(".evidence-meta").text()).toContain("新增 · 陈施霖 · 2024-12-16");
+    expect(rows[0].find(".evidence-body").text()).toContain("直销银行");
+    expect(rows[1].find(".evidence-body").text()).toContain("3．填报机构");
   });
 
   it("shows composite semantic match fields and filter conditions", () => {

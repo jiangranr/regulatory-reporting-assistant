@@ -229,7 +229,10 @@ def generate_task_ticket(task_id: int, session: Session = Depends(get_session)) 
         _replace_reporting_impacts(task_id, draft_impacts, session)
         impacts = [_impact_read_from_draft(item) for item in draft_impacts]
 
-    impact_drafts = [_impact_draft_from_read(item) for item in impacts]
+    impact_drafts = _enrich_impact_drafts_with_catalog(
+        [_impact_draft_from_read(item) for item in impacts],
+        session,
+    )
     change_drafts = _load_change_drafts(task_id, session) or extract_reporting_changes(document_text)
     existing_report_codes = _load_existing_report_codes(session)
 
@@ -243,7 +246,11 @@ def generate_task_ticket(task_id: int, session: Session = Depends(get_session)) 
     # historical_cases 现阶段是 stub（W2 后改为真实决策档案查询）
     from app.services.decision_archive_service import search_similar_decisions
 
-    historical_cases_by_key = search_similar_decisions(impact_drafts)
+    historical_cases_by_key = search_similar_decisions(
+        impact_drafts,
+        session=session,
+        exclude_task_id=task_id,
+    )
     plan = build_ticket_plan(
         classification,
         impact_drafts,
@@ -647,6 +654,77 @@ def _impact_draft_from_read(impact: ReportingImpactItemRead) -> ReportingImpactD
         confidence_level=impact.confidence_level,
         risk_level=impact.risk_level,
     )
+
+
+def _enrich_impact_drafts_with_catalog(
+    impacts: list[ReportingImpactDraft],
+    session: Session,
+) -> list[ReportingImpactDraft]:
+    """补齐工单展示需要的中文资产名称。
+
+    影响项表只持久化技术编码；工单生成前从报送目录和字段目录回填中文名，
+    让 ticket_drafts.affected_assets 能直接服务前端展示。
+    """
+    item_codes = {impact.reporting_item_code for impact in impacts if impact.reporting_item_code}
+    field_codes = {
+        field_code
+        for impact in impacts
+        for field_code in [impact.impacted_reporting_field, *impact.impacted_source_fields]
+        if field_code
+    }
+    items = session.exec(
+        select(RegReportingItem).where(RegReportingItem.item_code.in_(item_codes))
+    ).all() if item_codes else []
+    fields = session.exec(
+        select(DataFieldCatalog).where(DataFieldCatalog.field_code.in_(field_codes))
+    ).all() if field_codes else []
+    item_name_by_code = {item.item_code: item.item_name for item in items}
+    field_name_by_code = {field.field_code: field.field_name for field in fields}
+
+    item_id_by_code = {item.item_code: item.id for item in items if item.id is not None}
+    field_id_by_code = {field.field_code: field.id for field in fields if field.id is not None}
+    lineage_role_by_pair: dict[tuple[int, int], str] = {}
+    if item_id_by_code and field_id_by_code:
+        lineages = session.exec(
+            select(ReportingItemLineage).where(
+                ReportingItemLineage.reporting_item_id.in_(list(item_id_by_code.values())),
+                ReportingItemLineage.data_field_id.in_(list(field_id_by_code.values())),
+            )
+        ).all()
+        lineage_role_by_pair = {
+            (lineage.reporting_item_id, lineage.data_field_id): lineage.lineage_role
+            for lineage in lineages
+        }
+
+    enriched: list[ReportingImpactDraft] = []
+    for impact in impacts:
+        item_id = item_id_by_code.get(impact.reporting_item_code)
+        source_details = []
+        for field_code in impact.impacted_source_fields:
+            field_id = field_id_by_code.get(field_code)
+            role = (
+                lineage_role_by_pair.get((item_id, field_id), "")
+                if item_id is not None and field_id is not None
+                else ""
+            )
+            source_details.append({
+                "code": field_code,
+                "name": field_name_by_code.get(field_code, field_code),
+                "role": role,
+            })
+        enriched.append(
+            impact.model_copy(
+                update={
+                    "reporting_item_name": impact.reporting_item_name
+                    or item_name_by_code.get(impact.reporting_item_code, impact.reporting_item_code),
+                    "impacted_reporting_field_name": impact.impacted_reporting_field_name
+                    or field_name_by_code.get(impact.impacted_reporting_field, impact.impacted_reporting_field),
+                    "impacted_source_field_details": impact.impacted_source_field_details
+                    or source_details,
+                }
+            )
+        )
+    return enriched
 
 
 def _load_semantic_items(clause_ids: list[int], session: Session) -> list[RegSemanticItem]:

@@ -234,14 +234,22 @@ def _select_impacts(
 
 def _build_affected_assets(impacts: list[ReportingImpactDraft]) -> dict[str, list[str]]:
     return {
-        "reporting_item_codes": _dedupe(
-            impact.reporting_item_code for impact in impacts
+        "reporting_items": _dedupe_asset_dicts(
+            {
+                "code": impact.reporting_item_code,
+                "name": impact.reporting_item_name or impact.reporting_item_code,
+            }
+            for impact in impacts
         ),
-        "reporting_fields": _dedupe(
-            impact.impacted_reporting_field for impact in impacts
+        "reporting_fields": _dedupe_asset_dicts(
+            {
+                "code": impact.impacted_reporting_field,
+                "name": impact.impacted_reporting_field_name or impact.impacted_reporting_field,
+            }
+            for impact in impacts
         ),
-        "source_fields": _dedupe(
-            field
+        "source_fields": _dedupe_asset_dicts(
+            _source_field_asset(impact, field)
             for impact in impacts
             for field in impact.impacted_source_fields
         ),
@@ -267,12 +275,18 @@ def _build_evidence_refs(
     impacts: list[ReportingImpactDraft],
 ) -> list[dict]:
     refs: list[dict] = [
-        {"type": "trigger_reason", "value": reason}
+        {
+            "type": "trigger_reason",
+            "src": "工单触发规则",
+            "text": _trigger_reason_text(reason),
+        }
         for reason in _dedupe(trigger.trigger_reasons)
     ]
     refs.extend(
         {
             "type": "impact",
+            "src": f"影响分析 · {impact.reporting_item_code}",
+            "text": impact.impact_reason,
             "reporting_item_code": impact.reporting_item_code,
             "impact_type": impact.impact_type,
             "reason": impact.impact_reason,
@@ -280,6 +294,54 @@ def _build_evidence_refs(
         for impact in impacts
     )
     return refs
+
+
+_TRIGGER_REASON_TEXT: dict[str, str] = {
+    "REPORTING_ITEM_SCOPE_CHANGE": "报送项口径或适用范围发生变化。",
+    "REPORT_OR_SOURCE_FIELD_IMPACT": "报送字段或源字段映射受到影响。",
+    "SOURCE_FIELD_GAP": "存在源字段缺口，需要补充字段候选或确认无需改造。",
+    "PROCESSING_LOGIC_SIGNAL": "监管原文命中加工逻辑调整信号。",
+    "VALIDATION_RULE_SIGNAL": "监管原文命中校验规则调整信号。",
+    "HISTORICAL_DATA_SIGNAL": "监管原文命中历史数据追溯或重算信号。",
+    "TEST_ACCEPTANCE_REQUIRED": "变更需要测试验收和业务确认。",
+    "ARCHIVE_REQUIRED": "变更处理过程需要归档复盘。",
+    "L1_LIGHTWEIGHT_MERGED_TICKET": "L1 轻量变更合并为单张工单处理。",
+}
+
+
+def _trigger_reason_text(reason: str) -> str:
+    return _TRIGGER_REASON_TEXT.get(reason, reason)
+
+
+def _source_field_asset(impact: ReportingImpactDraft, field_code: str) -> dict[str, str]:
+    for detail in impact.impacted_source_field_details:
+        if detail.get("code") == field_code:
+            return {
+                "code": field_code,
+                "name": detail.get("name") or field_code,
+                "role": detail.get("role") or "",
+            }
+    role = ""
+    if len(impact.impacted_source_fields) == len(impact.impacted_lineage_roles):
+        index = impact.impacted_source_fields.index(field_code)
+        role = impact.impacted_lineage_roles[index]
+    return {"code": field_code, "name": field_code, "role": role}
+
+
+def _dedupe_asset_dicts(values) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for value in values:
+        code = str(value.get("code") or "").strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        deduped.append({
+            key: str(raw).strip()
+            for key, raw in value.items()
+            if raw is not None and str(raw).strip()
+        })
+    return deduped
 
 
 def _dedupe(values) -> list[str]:

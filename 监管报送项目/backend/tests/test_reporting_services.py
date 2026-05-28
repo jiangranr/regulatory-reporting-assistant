@@ -179,3 +179,46 @@ def test_manual_review_without_impacts_uses_matrix_fallback_scope_confirm():
     assert plan.children[0].card is None
     assert plan.children[0].quality is None
     assert "责任分配" in plan.children[0].content_markdown
+
+
+def test_ticket_cards_include_asset_names_and_readable_evidence_text():
+    catalog = build_1104_seed_catalog()
+    changes = extract_reporting_changes(
+        "监管要求调整G24最大百家金融机构同业融入情况表中同业融入余额统计口径。"
+    )
+    impacts = analyze_reporting_impacts(changes, catalog)
+    classification = ChangeClassification(
+        change_ticket_type=ChangeTicketType.SCOPE_ADJUSTMENT,
+        severity=SeverityScore(
+            level=SeverityLevel.L3_STANDARD,
+            score=8,
+            triggered_signals=["test"],
+        ),
+    )
+
+    plan = build_ticket_plan(
+        classification,
+        impacts,
+        "G24 口径调整",
+        document_text="调整同业融入余额统计口径。",
+    )
+
+    cards = [child.card for child in plan.children if child.card]
+    assert cards
+    first_card = cards[0]
+    assert first_card.affected_assets["reporting_items"][0] == {
+        "code": "G24.MAIN.INTERBANK_BORROWING_BAL_TOP100",
+        "name": "最大百家金融机构同业融入余额",
+    }
+    assert first_card.affected_assets["reporting_fields"][0] == {
+        "code": "rpt_g24.interbank_borrowing_bal_top100",
+        "name": "G24 最大百家金融机构同业融入余额",
+    }
+    assert {
+        "code": "interbank_deal.balance",
+        "name": "同业交易余额",
+        "role": "SOURCE_FIELD",
+    } in first_card.affected_assets["source_fields"]
+    assert all(ref.get("src") and ref.get("text") for ref in first_card.evidence_refs)
+    assert any("需要复核报送字段" in ref["text"] for ref in first_card.evidence_refs)
+    assert not any(ref["text"] == "REPORTING_ITEM_SCOPE_CHANGE" for ref in first_card.evidence_refs)

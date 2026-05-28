@@ -8,9 +8,12 @@ from app.services.ticket_scope_classifier import classify_scope_range_tickets
 
 class ReportingImpactDraft(BaseModel):
     reporting_item_code: str
+    reporting_item_name: str = ""
     impact_type: str
     impacted_reporting_field: str = ""
+    impacted_reporting_field_name: str = ""
     impacted_source_fields: list[str] = []
+    impacted_source_field_details: list[dict[str, str]] = []
     impacted_lineage_roles: list[str] = []
     impact_reason: str
     recommended_action: str
@@ -31,6 +34,7 @@ def analyze_reporting_impacts(
         lineage_by_item.setdefault(lineage["reporting_item_code"], []).append(lineage)
 
     item_names = {item["item_code"]: item["item_name"] for item in catalog.reporting_items}
+    field_names = {field["field_code"]: field.get("field_name", "") for field in catalog.data_fields}
 
     # 按 reporting_item_code 去重：多个变更命中同一指标时合并为 1 条 impact。
     # 这是数据质量的"二次防线"——当 matcher 因 row_label 缺失而把 16 个不同 cell 折叠到
@@ -52,16 +56,17 @@ def analyze_reporting_impacts(
             continue
 
         lineage_rows = lineage_by_item.get(change.reporting_item_code, [])
-        reporting_fields = [
-            row["data_field_code"] for row in lineage_rows if row["lineage_role"] == "REPORT_FIELD"
-        ]
-        source_fields = [
-            row["data_field_code"]
+        reporting_rows = [row for row in lineage_rows if row["lineage_role"] == "REPORT_FIELD"]
+        source_rows = [
+            row
             for row in lineage_rows
             if row["lineage_role"] in {"SOURCE_FIELD", "FILTER_FIELD", "DIMENSION_FIELD"}
         ]
+        reporting_fields = [row["data_field_code"] for row in reporting_rows]
+        source_fields = [row["data_field_code"] for row in source_rows]
         roles = list(dict.fromkeys(row["lineage_role"] for row in lineage_rows))
         item_name = item_names.get(change.reporting_item_code, change.reporting_item_code)
+        reporting_field = reporting_fields[0] if reporting_fields else ""
         ticket_scope = classify_scope_range_tickets(
             change_type=change.change_type,
             lineage_roles=roles,
@@ -71,9 +76,16 @@ def analyze_reporting_impacts(
         impacts.append(
             ReportingImpactDraft(
                 reporting_item_code=change.reporting_item_code,
+                reporting_item_name=item_name,
                 impact_type="INDICATOR_SCOPE",
-                impacted_reporting_field=reporting_fields[0] if reporting_fields else "",
+                impacted_reporting_field=reporting_field,
+                impacted_reporting_field_name=_field_name_for_code(
+                    reporting_field,
+                    reporting_rows,
+                    field_names,
+                ),
                 impacted_source_fields=list(dict.fromkeys(source_fields)),
+                impacted_source_field_details=_source_field_details(source_rows, field_names),
                 impacted_lineage_roles=roles,
                 impact_reason=(
                     f"{item_name}发生{change.change_type}"
@@ -102,20 +114,24 @@ def _semantic_change_to_impact(change: ReportingChangeDraft) -> ReportingImpactD
     if not match:
         return None
 
-    field_roles: list[tuple[str, str]] = []
+    field_roles: list[tuple[str, str, str]] = []
     for field in match.get("measure_fields") or []:
         if not isinstance(field, dict):
             continue
         field_code = str(field.get("field_code", "")).strip()
         if not field_code:
             continue
-        field_roles.append((field_code, _normalise_semantic_field_role(str(field.get("field_role", "")))))
+        field_roles.append((
+            field_code,
+            _normalise_semantic_field_role(str(field.get("field_role", ""))),
+            str(field.get("field_name") or "").strip(),
+        ))
 
-    known_fields = {field_code for field_code, _role in field_roles}
+    known_fields = {field_code for field_code, _role, _name in field_roles}
     for field_code in match.get("measure_field_codes") or []:
         field_code = str(field_code).strip()
         if field_code and field_code not in known_fields:
-            field_roles.append((field_code, "SOURCE_FIELD"))
+            field_roles.append((field_code, "SOURCE_FIELD", ""))
             known_fields.add(field_code)
 
     conditions = match.get("filter_conditions") or match.get("conditions") or []
@@ -124,20 +140,24 @@ def _semantic_change_to_impact(change: ReportingChangeDraft) -> ReportingImpactD
             continue
         field_code = str(condition.get("field_code", "")).strip()
         if field_code and field_code not in known_fields:
-            field_roles.append((field_code, "FILTER_FIELD"))
+            field_roles.append((
+                field_code,
+                "FILTER_FIELD",
+                str(condition.get("field_name") or "").strip(),
+            ))
             known_fields.add(field_code)
 
     for field_code in match.get("condition_field_codes") or []:
         field_code = str(field_code).strip()
         if field_code and field_code not in known_fields:
-            field_roles.append((field_code, "FILTER_FIELD"))
+            field_roles.append((field_code, "FILTER_FIELD", ""))
             known_fields.add(field_code)
 
     if not field_roles:
         return None
 
-    impacted_fields = [field_code for field_code, _role in field_roles]
-    roles = list(dict.fromkeys(role for _field_code, role in field_roles))
+    impacted_fields = [field_code for field_code, _role, _name in field_roles]
+    roles = list(dict.fromkeys(role for _field_code, role, _name in field_roles))
     ticket_scope = classify_scope_range_tickets(
         change_type=change.change_type,
         lineage_roles=roles,
@@ -168,9 +188,15 @@ def _semantic_change_to_impact(change: ReportingChangeDraft) -> ReportingImpactD
 
     return ReportingImpactDraft(
         reporting_item_code=change.reporting_item_code,
+        reporting_item_name=indicator_hint,
         impact_type=impact_type,
         impacted_reporting_field=indicator_hint,
+        impacted_reporting_field_name=indicator_hint,
         impacted_source_fields=impacted_fields,
+        impacted_source_field_details=[
+            {"code": field_code, "name": field_name or field_code, "role": role}
+            for field_code, role, field_name in field_roles
+        ],
         impacted_lineage_roles=roles,
         impact_reason=reason,
         recommended_action=(
@@ -195,3 +221,35 @@ def _normalise_semantic_field_role(field_role: str) -> str:
     if role in {"DIMENSION_FIELD"}:
         return "DIMENSION_FIELD"
     return "SOURCE_FIELD"
+
+
+def _field_name_for_code(
+    field_code: str,
+    lineage_rows: list[dict[str, str]],
+    field_names: dict[str, str],
+) -> str:
+    if not field_code:
+        return ""
+    for row in lineage_rows:
+        if row.get("data_field_code") == field_code:
+            return row.get("data_field_name") or field_names.get(field_code, "") or field_code
+    return field_names.get(field_code, "") or field_code
+
+
+def _source_field_details(
+    lineage_rows: list[dict[str, str]],
+    field_names: dict[str, str],
+) -> list[dict[str, str]]:
+    details: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in lineage_rows:
+        code = row.get("data_field_code", "").strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        details.append({
+            "code": code,
+            "name": row.get("data_field_name") or field_names.get(code, "") or code,
+            "role": row.get("lineage_role", ""),
+        })
+    return details

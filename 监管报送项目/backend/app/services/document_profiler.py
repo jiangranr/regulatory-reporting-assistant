@@ -95,6 +95,15 @@ def generate_document_profile(
 
     result, raw_response, model = complete_json(messages)
     change_signals = _parse_change_signals(result)
+    change_signals = _enrich_current_revision_action_evidence(
+        change_signals,
+        document.parsed_text or "",
+    )
+    change_signals = _ensure_current_revision_scope_signals(
+        change_signals,
+        document.parsed_text or "",
+        found_codes,
+    )
     # 原文核验：检查 evidence_text 是否真实存在于文档中，防止幻觉
     doc_text_normalized = re.sub(r"\s+", "", document.parsed_text or "")
     change_signals = [_ground_signal(s, doc_text_normalized) for s in change_signals]
@@ -257,7 +266,236 @@ def _parse_change_signals(result: dict) -> list[TableChangeSignal]:
                 composite_match=item.get("composite_match") if isinstance(item.get("composite_match"), dict) else {},
             )
         )
-    return signals
+    return _merge_instruction_signal_fragments(signals)
+
+
+def _merge_instruction_signal_fragments(signals: list[TableChangeSignal]) -> list[TableChangeSignal]:
+    """Merge adjacent Word revision fragments that describe the same indicator.
+
+    Word tracked changes often split one business change into several runs:
+    field label, definition text, formula text, and variable explanations. Keep
+    the original action/date evidence, but expose one business signal downstream.
+    """
+    groups: dict[tuple[str, str, str], list[TableChangeSignal]] = {}
+    order: list[tuple[str, str, str]] = []
+    for signal in signals:
+        key = (
+            signal.table_code,
+            _normalise_section_hint(signal.section_hint),
+            _normalise_indicator_hint(signal.indicator_hint),
+        )
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(signal)
+
+    merged: list[TableChangeSignal] = []
+    for key in order:
+        group = groups[key]
+        if len(group) == 1 or not any(_has_revision_action_marker(s.evidence_text) for s in group):
+            merged.extend(group)
+            continue
+        merged.append(_merge_signal_group(group))
+    return merged
+
+
+def _normalise_section_hint(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def _normalise_indicator_hint(text: str) -> str:
+    normalised = re.sub(r"\s+", "", text or "").replace("·", ".")
+    normalised = re.sub(r"(?:填报)?(?:定义|说明|计算公式|公式|口径).*$", "", normalised)
+    return normalised or re.sub(r"\s+", "", text or "")
+
+
+def _has_revision_action_marker(text: str) -> bool:
+    return bool(re.search(r"\[\s*(?:新增|删除)\s*\|", text or ""))
+
+
+def _merge_signal_group(group: list[TableChangeSignal]) -> TableChangeSignal:
+    representative = min(
+        enumerate(group),
+        key=lambda item: (len(item[1].indicator_hint or ""), item[0]),
+    )[1]
+    evidence_parts: list[str] = []
+    for signal in group:
+        if signal.evidence_text and signal.evidence_text not in evidence_parts:
+            evidence_parts.append(signal.evidence_text)
+    return TableChangeSignal(
+        table_code=representative.table_code,
+        section_hint=representative.section_hint,
+        indicator_hint=representative.indicator_hint,
+        change_type=_dominant_change_type([s.change_type for s in group]),
+        evidence_text="；".join(evidence_parts),
+        confidence=max(s.confidence for s in group),
+        evidence_verified=all(s.evidence_verified for s in group),
+        matched_item_code=next((s.matched_item_code for s in group if s.matched_item_code), ""),
+        match_status=next((s.match_status for s in group if s.match_status), ""),
+        composite_match=next((s.composite_match for s in group if s.composite_match), {}),
+    )
+
+
+def _dominant_change_type(change_types: list[str]) -> str:
+    priority = {
+        "ADD": 6,
+        "DELETE": 5,
+        "MODIFY": 4,
+        "SCOPE_ADJUST": 3,
+        "INSTRUCTION_ADJUST": 2,
+        "UNCLEAR": 1,
+    }
+    return max(change_types, key=lambda t: priority.get(t, 0)) if change_types else "UNCLEAR"
+
+
+def _enrich_current_revision_action_evidence(
+    signals: list[TableChangeSignal],
+    document_text: str,
+) -> list[TableChangeSignal]:
+    actions = _extract_current_revision_actions(document_text)
+    if not actions:
+        return signals
+
+    enriched: list[TableChangeSignal] = []
+    for signal in signals:
+        additions = [
+            action["raw"]
+            for action in actions
+            if _revision_action_applies_to_signal(action["text"], signal.evidence_text)
+            and action["raw"] not in signal.evidence_text
+        ]
+        if additions:
+            enriched.append(_copy_signal_with_evidence(signal, "；".join([*additions, signal.evidence_text])))
+        else:
+            enriched.append(signal)
+    return enriched
+
+
+def _extract_current_revision_actions(document_text: str) -> list[dict[str, str]]:
+    current_actions: list[dict[str, str]] = []
+    legacy_actions: list[dict[str, str]] = []
+    block: str | None = None
+    for line in document_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if "当前版本修订动作" in stripped:
+                block = "current"
+            elif "修订追踪" in stripped:
+                block = "legacy"
+            else:
+                block = None
+            continue
+        if block is None:
+            continue
+        parsed = _parse_revision_action_line(stripped)
+        if not parsed:
+            continue
+        if block == "current":
+            current_actions.append(parsed)
+        else:
+            legacy_actions.append(parsed)
+    return _latest_year_revision_actions(current_actions or legacy_actions)
+
+
+def _parse_revision_action_line(line: str) -> dict[str, str] | None:
+    match = re.match(r"^-?\s*\[\s*(新增|删除)\s*\|\s*([^|]+?)\s*\|\s*([^\]]+?)\s*\]\s*(.+)$", line)
+    if not match:
+        return None
+    action, author, date, text = match.groups()
+    date = date.strip()
+    text = text.strip()
+    return {
+        "raw": f"[{action} | {author.strip()} | {date}] {text}",
+        "text": text,
+        "date": date,
+    }
+
+
+def _latest_year_revision_actions(actions: list[dict[str, str]]) -> list[dict[str, str]]:
+    years = [
+        int(match.group(1))
+        for action in actions
+        if (match := re.match(r"^\s*(\d{4})", action.get("date", "")))
+    ]
+    if not years:
+        return actions
+    latest_year = max(years)
+    return [
+        action
+        for action in actions
+        if (match := re.match(r"^\s*(\d{4})", action.get("date", "")))
+        and int(match.group(1)) == latest_year
+    ]
+
+
+def _revision_action_applies_to_signal(action_text: str, evidence_text: str) -> bool:
+    token = re.sub(r"[，,。、；;：:\[\]\s]+", "", action_text or "")
+    if len(token) < 2:
+        return False
+    evidence_normalized = re.sub(r"\s+", "", evidence_text or "")
+    return token in evidence_normalized
+
+
+def _copy_signal_with_evidence(signal: TableChangeSignal, evidence_text: str) -> TableChangeSignal:
+    return TableChangeSignal(
+        table_code=signal.table_code,
+        section_hint=signal.section_hint,
+        indicator_hint=signal.indicator_hint,
+        change_type=signal.change_type,
+        evidence_text=evidence_text,
+        confidence=signal.confidence,
+        evidence_verified=signal.evidence_verified,
+        matched_item_code=signal.matched_item_code,
+        match_status=signal.match_status,
+        composite_match=signal.composite_match,
+    )
+
+
+def _ensure_current_revision_scope_signals(
+    signals: list[TableChangeSignal],
+    document_text: str,
+    found_codes: list[str],
+) -> list[TableChangeSignal]:
+    """Add deterministic scope signals for instruction paragraphs the LLM missed."""
+    if any("填报机构" in signal.indicator_hint for signal in signals):
+        return signals
+
+    paragraph = _extract_instruction_paragraph(document_text, "填报机构")
+    if not paragraph:
+        return signals
+
+    actions = _extract_current_revision_actions(document_text)
+    additions = [
+        action["raw"]
+        for action in actions
+        if _revision_action_applies_to_signal(action["text"], paragraph)
+    ]
+    if not additions:
+        return signals
+
+    table_code = next((code for code in found_codes if code), "")
+    if not table_code:
+        return signals
+
+    return [
+        *signals,
+        TableChangeSignal(
+            table_code=table_code,
+            section_hint="第二部分：一般说明",
+            indicator_hint="填报机构范围",
+            change_type="SCOPE_ADJUST",
+            evidence_text="；".join([*additions, paragraph]),
+            confidence=0.86,
+        ),
+    ]
+
+
+def _extract_instruction_paragraph(document_text: str, keyword: str) -> str:
+    for line in document_text.splitlines():
+        stripped = line.strip()
+        if keyword in stripped and re.match(r"^\s*\d+\s*[．.]\s*", stripped):
+            return stripped
+    return ""
 
 
 def _normalize_revision_marker_change_type(change_type: str, evidence_text: str, indicator_hint: str = "") -> str:

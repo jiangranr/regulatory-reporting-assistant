@@ -66,6 +66,7 @@ def load_catalog_from_db(session: Session) -> ReportingSeedCatalog:
         {
             "reporting_item_code": item.item_code,
             "data_field_code": field.field_code,
+            "data_field_name": field.field_name,
             "lineage_role": ril.lineage_role,
             # extra context that analyzer might want later; safe to ignore
             "transform_logic": ril.transform_expression or "",
