@@ -102,3 +102,9 @@ def test_whitespace_and_malformed_codes_do_not_create_cross_report_reason():
         "CROSS_REPORT_CONSISTENCY" not in trigger.trigger_reasons
         for trigger in validation_triggers
     )
+
+
+def test_no_substantive_trigger_basis_returns_empty_for_matrix_fallback():
+    triggers = build_ticket_triggers([], document_text="")
+
+    assert triggers == []

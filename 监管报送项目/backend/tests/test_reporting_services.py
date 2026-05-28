@@ -1,4 +1,4 @@
-from app.models.enums import ChangeTicketType, SeverityLevel
+from app.models.enums import ActionTicketType, ChangeTicketType, SeverityLevel
 from app.services.change_severity_classifier import ChangeClassification, SeverityScore
 from app.services.reporting_change_extractor import extract_reporting_changes, signals_to_changes
 from app.services.reporting_impact_analyzer import analyze_reporting_impacts
@@ -154,3 +154,28 @@ def test_build_ticket_plan_outputs_structured_ticket_cards():
     assert all(
         child.quality and child.quality.score > 0 for child in plan.children
     )
+
+
+def test_manual_review_without_impacts_uses_matrix_fallback_scope_confirm():
+    classification = ChangeClassification(
+        change_ticket_type=ChangeTicketType.MANUAL_REVIEW,
+        severity=SeverityScore(
+            level=SeverityLevel.L2_LIGHT,
+            score=3,
+            triggered_signals=["low confidence"],
+        ),
+    )
+
+    plan = build_ticket_plan(
+        classification,
+        [],
+        "人工复核任务",
+        document_text="",
+    )
+
+    assert [child.action_type for child in plan.children] == [
+        ActionTicketType.SCOPE_CONFIRM
+    ]
+    assert plan.children[0].card is None
+    assert plan.children[0].quality is None
+    assert "责任分配" in plan.children[0].content_markdown

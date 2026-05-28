@@ -67,7 +67,10 @@
                 <span class="tag outline">{{ changeTypeLabel(parent.change_ticket_type) }}</span>
               </div>
               <div class="title">{{ parent.title }}</div>
-              <div class="desc">Owner：{{ roleLabel(parent.owner_role) }} · 评分 {{ parent.severity_score }}</div>
+              <div class="desc">
+                Owner：{{ roleLabel(parent.owner_role) }} · 评分 {{ parent.severity_score }}
+                <template v-if="parent.responsible_system"> · {{ responsibleSystemLabel(parent.responsible_system) }}</template>
+              </div>
             </div>
 
             <!-- 该母单下的子单（缩进） -->
@@ -80,11 +83,15 @@
               <div class="tk-head">
                 <span class="tag blue">子单</span>
                 <span class="tag outline">{{ actionTypeLabel(child.action_ticket_type) }}</span>
+                <span v-if="child.responsible_system" class="tag outline">{{ responsibleSystemLabel(child.responsible_system) }}</span>
                 <span v-if="child.depends_on_lineage" class="tag amber">血缘</span>
                 <span v-if="child.business_signoff_required" class="tag green">业务签</span>
               </div>
               <div class="title">{{ child.title }}</div>
-              <div class="desc">A：{{ roleLabel(child.owner_role) }} · R：{{ roleLabel(child.executor_role) }}</div>
+              <div class="desc">
+                A：{{ roleLabel(child.owner_role) }} · R：{{ roleLabel(child.executor_role) }}
+                <template v-if="child.responsible_system"> · {{ responsibleSystemLabel(child.responsible_system) }}</template>
+              </div>
             </div>
           </div>
 
@@ -97,6 +104,7 @@
           >
             <div class="tk-head">
               <span class="tag violet">草稿</span>
+              <span v-if="tk.responsible_system" class="tag outline">{{ responsibleSystemLabel(tk.responsible_system) }}</span>
             </div>
             <div class="title">{{ tk.title }}</div>
             <div class="desc">{{ tk.content?.slice(0, 80) }}…</div>
@@ -157,7 +165,75 @@
             </div>
           </div>
 
-          <div class="doc-body">
+          <div v-if="isStructuredTicket(activeTicket)" class="doc-body structured-doc">
+            <div class="structured-card">
+              <div class="structured-main">
+                <div class="field-label">任务目标</div>
+                <p class="summary-text">{{ activeTicket.summary || activeTicket.title }}</p>
+              </div>
+              <div class="metric-box">
+                <span>质量评分</span>
+                <strong>{{ displayQualityScore(activeTicket) }}</strong>
+              </div>
+            </div>
+
+            <div class="doc-section">
+              <h4>责任系统</h4>
+              <div class="row" style="flex-wrap:wrap;gap:6px;">
+                <span class="tag blue">{{ responsibleSystemLabel(activeTicket.responsible_system) }}</span>
+                <span v-for="system in structuredList(activeTicket.affected_systems)" :key="system" class="tag outline">{{ responsibleSystemLabel(system) }}</span>
+              </div>
+            </div>
+
+            <div v-if="structuredList(activeTicket.affected_assets).length" class="doc-section">
+              <h4>影响资产</h4>
+              <div class="row" style="flex-wrap:wrap;gap:6px;">
+                <span v-for="asset in structuredList(activeTicket.affected_assets)" :key="asset" class="tag outline mono">{{ asset }}</span>
+              </div>
+            </div>
+
+            <div v-if="structuredList(activeTicket.must_do).length" class="doc-section">
+              <h4>必须处理</h4>
+              <ul class="structured-list">
+                <li v-for="item in structuredList(activeTicket.must_do)" :key="item">{{ item }}</li>
+              </ul>
+            </div>
+
+            <div v-if="structuredList(activeTicket.must_confirm).length" class="doc-section">
+              <h4>必须确认</h4>
+              <ul class="structured-list">
+                <li v-for="item in structuredList(activeTicket.must_confirm)" :key="item">{{ item }}</li>
+              </ul>
+            </div>
+
+            <div v-if="structuredList(activeTicket.blockers).length" class="doc-section">
+              <h4>阻塞点</h4>
+              <ul class="structured-list">
+                <li v-for="item in structuredList(activeTicket.blockers)" :key="item">{{ item }}</li>
+              </ul>
+            </div>
+
+            <div v-if="structuredList(activeTicket.output_artifacts).length" class="doc-section">
+              <h4>输出物</h4>
+              <ul class="structured-list">
+                <li v-for="item in structuredList(activeTicket.output_artifacts)" :key="item">{{ item }}</li>
+              </ul>
+            </div>
+
+            <div v-if="structuredList(activeTicket.acceptance_criteria_structured).length" class="doc-section">
+              <h4>验收标准</h4>
+              <ul class="structured-list">
+                <li v-for="item in structuredList(activeTicket.acceptance_criteria_structured)" :key="item">{{ item }}</li>
+              </ul>
+            </div>
+
+            <details class="doc-section compatibility-details">
+              <summary>兼容 Markdown 明细</summary>
+              <pre class="ticket-content">{{ activeTicket.content || defaultTicketContent }}</pre>
+            </details>
+          </div>
+
+          <div v-else class="doc-body">
             <div class="doc-section">
               <h4>工单正文</h4>
               <pre class="ticket-content">{{ activeTicket.content || defaultTicketContent }}</pre>
@@ -323,6 +399,15 @@ const ROLE_LABELS: Record<string, string> = {
   QA: "测试",
   COMPLIANCE: "合规",
 };
+const RESPONSIBLE_SYSTEM_LABELS: Record<string, string> = {
+  REG_REPORTING_SYSTEM: "监管报送系统",
+  DATA_GOVERNANCE_PLATFORM: "数据治理平台",
+  DATA_MART_ETL: "数据集市 / ETL",
+  SOURCE_SYSTEM: "源系统",
+  DATA_QUALITY_PLATFORM: "数据质量平台",
+  TEST_ACCEPTANCE: "测试验收",
+  KNOWLEDGE_ARCHIVE: "归档知识库",
+};
 
 function changeTypeLabel(t: string): string {
   return CHANGE_TYPE_LABELS[t] || t || "—";
@@ -335,6 +420,54 @@ function roleLabel(r: string): string {
 }
 function severityTone(level: string): string {
   return ({ L1: "green", L2: "blue", L3: "amber", L4: "red" } as Record<string, string>)[level] || "outline";
+}
+function responsibleSystemLabel(system: string): string {
+  return RESPONSIBLE_SYSTEM_LABELS[system] || system || "未指定";
+}
+
+function safeJsonParse(value: string): unknown {
+  const text = value.trim();
+  if (!text) return null;
+  if (!text.startsWith("[") && !text.startsWith("{")) return text;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function flattenStructuredValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => flattenStructuredValue(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .flatMap(([key, item]) => {
+        const flattened = flattenStructuredValue(item);
+        return flattened.length ? flattened.map((text) => `${key}：${text}`) : [key];
+      });
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const text = String(value).trim();
+    return text ? [text] : [];
+  }
+  return [];
+}
+
+function structuredList(raw: string): string[] {
+  return flattenStructuredValue(safeJsonParse(raw));
+}
+
+function isStructuredTicket(ticket: TicketDraft): boolean {
+  return Boolean(
+    ticket.summary?.trim()
+      || ticket.responsible_system?.trim()
+      || structuredList(ticket.must_do).length,
+  );
+}
+
+function displayQualityScore(ticket: TicketDraft): string {
+  return ticket.quality_score ? String(ticket.quality_score) : "未评分";
 }
 
 const impactTags = computed(() => {
@@ -391,5 +524,69 @@ function toneFromChangeType(t: string): string {
   background: var(--surface-100, #f8fafc);
   padding: 12px;
   border-radius: 6px;
+}
+.structured-doc .doc-section {
+  margin-top: 14px;
+}
+.structured-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 14px;
+  align-items: stretch;
+  padding: 14px;
+  border: 1px solid var(--line-200, #e2e8f0);
+  border-radius: 8px;
+  background: var(--surface-100, #f8fafc);
+}
+.structured-main {
+  min-width: 0;
+}
+.field-label {
+  font-size: 12px;
+  color: var(--ink-400);
+  margin-bottom: 6px;
+}
+.summary-text {
+  margin: 0;
+  line-height: 1.65;
+  color: var(--ink-800, #1e293b);
+}
+.metric-box {
+  border-left: 1px solid var(--line-200, #e2e8f0);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink-500, #64748b);
+  font-size: 12px;
+}
+.metric-box strong {
+  color: var(--ink-900, #0f172a);
+  font-size: 22px;
+}
+.structured-list {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.7;
+}
+.compatibility-details summary {
+  cursor: pointer;
+  color: var(--ink-500, #64748b);
+  font-weight: 600;
+}
+.compatibility-details .ticket-content {
+  margin-top: 10px;
+}
+@media (max-width: 720px) {
+  .structured-card {
+    grid-template-columns: 1fr;
+  }
+  .metric-box {
+    border-left: 0;
+    border-top: 1px solid var(--line-200, #e2e8f0);
+    padding-top: 10px;
+    align-items: flex-start;
+  }
 }
 </style>
