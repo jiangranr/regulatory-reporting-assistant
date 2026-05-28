@@ -35,6 +35,13 @@ class RegDocumentRead(BaseModel):
     table_count: int
     parse_quality: str
     parse_error_message: str
+    document_no: str = ""
+    issuing_authority: str = ""
+    published_at: str = ""
+    effective_date: str = ""
+    first_report_period: str = ""
+    regulatory_intent: str = ""
+    metadata_extraction_status: str = "PENDING"
     created_at: datetime
 
 

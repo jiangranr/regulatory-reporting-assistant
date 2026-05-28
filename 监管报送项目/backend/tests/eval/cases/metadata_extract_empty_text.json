@@ -1,0 +1,27 @@
+{
+  "id": "metadata_extract_empty_text",
+  "description": "空文本输入 → status=FAILED，所有字段为空。",
+  "category": "rule_based",
+  "target": "metadata_extract",
+  "tags": ["metadata", "regulatory", "negative"],
+  "inputs": {
+    "text": ""
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 1, "max": 1 },
+      "reason": "失败时仍返回 1 条带 status=FAILED 的 signal"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "status=FAILED" },
+      "reason": "空文本应触发 FAILED"
+    },
+    {
+      "kind": "must_not_contain",
+      "spec": { "keyword_any": ["status=OK", "status=PARTIAL"] },
+      "reason": "不应给非 FAILED 的状态"
+    }
+  ]
+}

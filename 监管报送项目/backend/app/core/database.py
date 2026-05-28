@@ -28,6 +28,7 @@ def init_db() -> None:
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     SQLModel.metadata.create_all(engine)
     _ensure_reg_document_parse_columns()
+    _ensure_reg_document_metadata_columns()
     _ensure_document_task_profile_columns()
     _ensure_reg_reporting_object_columns()
     _ensure_reg_reporting_item_columns()
@@ -49,6 +50,36 @@ def _ensure_reg_document_parse_columns() -> None:
             connection.execute(text(f"ALTER TABLE reg_documents ADD COLUMN {name} {ddl}"))
         connection.execute(
             text("UPDATE reg_documents SET parse_error_message = '' WHERE parse_error_message IS NULL")
+        )
+
+
+def _ensure_reg_document_metadata_columns() -> None:
+    """补充 RegDocument 的监管元数据列（旧库兼容）。
+
+    document_no / issuing_authority / published_at / effective_date /
+    first_report_period / regulatory_intent / metadata_extraction_status。
+    """
+    inspector = inspect(engine)
+    if "reg_documents" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("reg_documents")}
+    text_column = "TEXT" if engine.dialect.name in {"mysql", "mariadb"} else "TEXT DEFAULT ''"
+    new_cols = [
+        ("document_no", "VARCHAR(128) DEFAULT ''"),
+        ("issuing_authority", "VARCHAR(255) DEFAULT ''"),
+        ("published_at", "VARCHAR(32) DEFAULT ''"),
+        ("effective_date", "VARCHAR(32) DEFAULT ''"),
+        ("first_report_period", "VARCHAR(64) DEFAULT ''"),
+        ("regulatory_intent", text_column),
+        ("metadata_extraction_status", "VARCHAR(20) DEFAULT 'PENDING'"),
+    ]
+    with engine.begin() as connection:
+        for name, ddl in new_cols:
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE reg_documents ADD COLUMN {name} {ddl}"))
+        # 对 MySQL TEXT 列补 NULL → '' 默认值
+        connection.execute(
+            text("UPDATE reg_documents SET regulatory_intent = '' WHERE regulatory_intent IS NULL")
         )
 
 

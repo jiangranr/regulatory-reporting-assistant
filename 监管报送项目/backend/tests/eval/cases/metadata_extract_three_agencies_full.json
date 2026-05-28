@@ -1,0 +1,36 @@
+{
+  "id": "metadata_extract_three_agencies_full",
+  "description": "三部门联合公告，6 个元数据字段应全部命中，status=OK。",
+  "category": "rule_based",
+  "target": "metadata_extract",
+  "tags": ["metadata", "regulatory", "happy_path"],
+  "inputs": {
+    "text_path": "docs/测试监管材料/三部门公告2026第15号_G24G31同业投资跨表口径调整.txt"
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 1, "max": 1 },
+      "reason": "metadata_extract 永远返回 1 条 signal"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword_all": [
+        "status=OK",
+        "document_no=〔2026〕第 15 号",
+        "国家金融监督管理总局",
+        "中国人民银行",
+        "国家外汇管理局",
+        "published_at=2026-05-26",
+        "effective_date=2026-07-01",
+        "first_report_period=2026Q3"
+      ] },
+      "reason": "6 字段必须全部抽到位"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "intent=为深化" },
+      "reason": "政策目的段应抽到，且以'为深化'起头"
+    }
+  ]
+}

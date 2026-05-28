@@ -1,0 +1,40 @@
+{
+  "id": "metadata_extract_partial_only_authority",
+  "description": "缺生效日 + 文号 + 报送时点，只有发文单位和发布日期 → status=PARTIAL。",
+  "category": "rule_based",
+  "target": "metadata_extract",
+  "tags": ["metadata", "regulatory", "partial"],
+  "inputs": {
+    "text": "中国人民银行\n\n关于优化数据治理工作的通知\n\n各分行：现就数据治理事项通知如下，请各单位认真贯彻执行。\n\n                                          2026 年 3 月 10 日\n"
+  },
+  "expectations": [
+    {
+      "kind": "signal_count",
+      "spec": { "min": 1, "max": 1 },
+      "reason": "metadata_extract 永远返回 1 条 signal"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword_all": [
+        "status=PARTIAL",
+        "issuing_authority=中国人民银行",
+        "published_at=2026-03-10"
+      ] },
+      "reason": "应命中发文单位与发布日期"
+    },
+    {
+      "kind": "must_contain",
+      "spec": { "keyword_all": [
+        "effective_date=",
+        "first_report_period=",
+        "document_no="
+      ] },
+      "reason": "缺失字段应为空字符串"
+    },
+    {
+      "kind": "must_not_contain",
+      "spec": { "keyword": "status=OK" },
+      "reason": "未补足 4+ 字段不能给 OK"
+    }
+  ]
+}

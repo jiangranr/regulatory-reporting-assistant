@@ -24,6 +24,14 @@ class RegDocument(SQLModel, table=True):
     table_count: int = 0
     parse_quality: str = "UNKNOWN"
     parse_error_message: str = Field(default="", sa_column=Column(Text))
+    # 监管元数据（由 instruction_parser.extract_regulatory_metadata 填充）
+    document_no: str = ""                 # 〔2026〕第 15 号
+    issuing_authority: str = ""           # 国家金融监督管理总局/中国人民银行/...
+    published_at: str = ""                # 2026-05-26（落款日期）
+    effective_date: str = ""              # 2026-07-01（自...起施行）
+    first_report_period: str = ""         # 2026Q3 / 2026-09-30（首次报送时点）
+    regulatory_intent: str = Field(default="", sa_column=Column(Text))  # 政策目的段（限 300 字）
+    metadata_extraction_status: str = "PENDING"  # PENDING / OK / PARTIAL / FAILED
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

@@ -32,6 +32,7 @@ from app.models.schemas import ConceptMatchRequest
 from app.services.concept_seed import seed_concepts_and_rule_cards
 from app.services.excel_parser import ExcelParseResult, parse_excel
 from app.services.g31_excel_diff import diff_excel_with_db
+from app.services.instruction_parser import extract_regulatory_metadata
 from app.services.item_resolver import ReportingItemResolver
 
 from .framework import register_target
@@ -423,3 +424,50 @@ def _run_item_resolve(inputs: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return signals
+
+
+@register_target("metadata_extract")
+def _run_metadata_extract(inputs: dict[str, Any]) -> list[dict[str, Any]]:
+    """走 extract_regulatory_metadata 抽取监管发文头部元数据。
+
+    inputs 期望字段：
+      text: str                   监管发文正文（直接传文本）
+      或
+      text_path: str              相对项目根的 txt 文件路径
+
+    输出 1 条 signal，evidence_text 拼接所有抽取结果便于关键词匹配。
+    """
+    text = inputs.get("text", "")
+    if not text:
+        path = inputs.get("text_path", "")
+        if path:
+            text = _resolve_path(path).read_text(encoding="utf-8")
+
+    meta = extract_regulatory_metadata(text)
+
+    evidence_parts = [
+        f"status={meta.status}",
+        f"document_no={meta.document_no}",
+        f"issuing_authority={meta.issuing_authority}",
+        f"published_at={meta.published_at}",
+        f"effective_date={meta.effective_date}",
+        f"first_report_period={meta.first_report_period}",
+        f"intent={meta.regulatory_intent[:80]}",
+    ]
+
+    return [
+        {
+            "table_code": "",
+            "section_hint": "",
+            "indicator_hint": "",
+            "change_type": "METADATA",
+            "evidence_text": " | ".join(evidence_parts),
+            # 原字段保留方便后续 spec 匹配
+            "document_no": meta.document_no,
+            "issuing_authority": meta.issuing_authority,
+            "published_at": meta.published_at,
+            "effective_date": meta.effective_date,
+            "first_report_period": meta.first_report_period,
+            "status": meta.status,
+        }
+    ]

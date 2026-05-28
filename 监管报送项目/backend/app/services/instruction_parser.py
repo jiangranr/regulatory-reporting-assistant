@@ -50,6 +50,38 @@ class InstructionParseResult:
     error_message: str = ""
 
 
+def current_version_revisions(revisions: list[RevisionFragment]) -> list[RevisionFragment]:
+    """Return revisions from the latest revision year in the Word history.
+
+    Legacy 1104 instructions often carry years of tracked changes. For a
+    version review, only the latest dated revision wave should drive the
+    "current version" change summary.
+    """
+    dated_years = [
+        int(match.group(1))
+        for revision in revisions
+        if (match := re.match(r"^(\d{4})", revision.date or ""))
+    ]
+    if not dated_years:
+        return revisions
+
+    latest_year = max(dated_years)
+    return [
+        revision
+        for revision in revisions
+        if re.match(rf"^{latest_year}", revision.date or "")
+    ]
+
+
+def _revision_action_label(revision: RevisionFragment) -> str:
+    return "新增" if revision.change_type == "INSERT" else "删除"
+
+
+def _format_revision_action(revision: RevisionFragment) -> str:
+    date = revision.date[:10] if revision.date else ""
+    return f"[{_revision_action_label(revision)} | {revision.author} | {date}] {revision.text}"
+
+
 def parse_instruction_file(filename: str, content: bytes) -> InstructionParseResult:
     suffix = Path(filename).suffix.lower()
     if suffix in {".doc", ".docx"}:
@@ -105,14 +137,17 @@ def build_pair_document_text(
 
     sections.append("")
 
-    # 修订追踪
-    if instruction.revisions:
-        sections.append(f"## 修订追踪（共 {len(instruction.revisions)} 条）")
-        for rev in instruction.revisions[:60]:
-            label = "新增" if rev.change_type == "INSERT" else "删除"
-            sections.append(f"- [{label} | {rev.author} | {rev.date[:10] if rev.date else ''}] {rev.text}")
+    # 当前版本修订动作：保留操作、作者、日期，过滤掉历史版本遗留修订。
+    current_revisions = current_version_revisions(instruction.revisions)
+    if current_revisions:
+        sections.append(
+            f"## 当前版本修订动作（共 {len(current_revisions)} 条，"
+            f"原始修订共 {len(instruction.revisions)} 条）"
+        )
+        for rev in current_revisions[:60]:
+            sections.append(f"- {_format_revision_action(rev)}")
     else:
-        sections.append("## 修订追踪\n- 未识别到修订追踪。")
+        sections.append("## 当前版本修订动作\n- 未识别到修订追踪。")
 
     sections.append("")
 
@@ -343,3 +378,192 @@ def _dedupe_highlights(highlights: list[HighlightFragment]) -> list[HighlightFra
         seen.add(key)
         result.append(item)
     return result
+
+
+# ---------------------------------------------------------------------------
+# 监管元数据抽取
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RegulatoryMetadata:
+    """监管文档头部元数据。供 Module D（工单执行规划）使用。"""
+
+    document_no: str = ""
+    issuing_authority: str = ""
+    published_at: str = ""           # ISO YYYY-MM-DD
+    effective_date: str = ""         # ISO YYYY-MM-DD
+    first_report_period: str = ""    # 2026Q3 / 2026-09-30
+    regulatory_intent: str = ""      # 政策目的段（≤300 字）
+    status: str = "PENDING"          # PENDING / OK / PARTIAL / FAILED
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "document_no": self.document_no,
+            "issuing_authority": self.issuing_authority,
+            "published_at": self.published_at,
+            "effective_date": self.effective_date,
+            "first_report_period": self.first_report_period,
+            "regulatory_intent": self.regulatory_intent,
+            "metadata_extraction_status": self.status,
+        }
+
+
+_KNOWN_AUTHORITIES = [
+    "国家金融监督管理总局",
+    "中国银行保险监督管理委员会",
+    "中国银保监会",
+    "银保监会",
+    "中国人民银行",
+    "人民银行",
+    "国家外汇管理局",
+    "外汇局",
+    "财政部",
+    "国家税务总局",
+    "中国证券监督管理委员会",
+    "证监会",
+]
+
+
+_DOC_NO_PATTERNS = [
+    # "国金监办〔2026〕14 号" / "银保监办发〔2026〕14 号"
+    re.compile(r"[一-龥A-Za-z]{2,12}〔\d{4}〕第?\s*\d+\s*号"),
+    # 纯文号 "〔2026〕第 15 号"
+    re.compile(r"〔\d{4}〕第?\s*\d+\s*号"),
+    # 公告/通知编号 "2026 年第 15 号"
+    re.compile(r"\d{4}\s*年第\s*\d+\s*号"),
+]
+
+
+_EFFECTIVE_PATTERN = re.compile(
+    r"自\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*起\s*(?:施行|执行|实施|生效)"
+)
+
+_PUBLISHED_PATTERN = re.compile(
+    r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
+)
+
+_REPORT_PERIOD_PATTERNS = [
+    # "2026 年第三季度报表（数据日期 2026-09-30）按本公告口径首次报送"
+    re.compile(
+        r"(\d{4})\s*年\s*第\s*([一二三四1234])\s*季度报表[^。\n]{0,80}?首次报送"
+    ),
+    re.compile(
+        r"(\d{4})\s*年\s*第\s*([一二三四1234])\s*季度.{0,40}?按本(?:公告|通知|办法)口径"
+    ),
+    # 月度："自 2026 年 1 月报送日起"
+    re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(?:报送日|起报送)"),
+]
+
+_INTENT_PATTERN = re.compile(
+    r"(为(?:了|深化|规范|加强|落实|进一步|更好|确保)[^。]{8,260}?)(?:[，,]\s*现就|[，,]\s*公告如下|[，,]\s*通知如下|[，,]\s*特公告|[，,]\s*特通知|。)",
+    re.DOTALL,
+)
+
+
+_CN_QUARTER_MAP = {"一": "Q1", "二": "Q2", "三": "Q3", "四": "Q4",
+                   "1": "Q1", "2": "Q2", "3": "Q3", "4": "Q4"}
+
+
+def extract_regulatory_metadata(parsed_text: str) -> RegulatoryMetadata:
+    """从监管发文正文抽取头部元数据。
+
+    设计原则：
+    - 纯 regex，零外部依赖，单文档执行 < 10ms
+    - 任何字段抽不到给空字符串，不抛异常
+    - status: 至少抽到 1 个字段 → PARTIAL；4+ → OK；全空 → FAILED
+    """
+    if not parsed_text:
+        return RegulatoryMetadata(status="FAILED")
+
+    text = parsed_text.replace("　", " ")
+    head = text[:1500]   # 头部 1500 字（含发文单位 / 文号 / 标题 / 政策目的）
+    tail = text[-600:]   # 落款 600 字（含发布日期）
+
+    fields: dict[str, str] = {
+        "document_no": _find_doc_no(head),
+        "issuing_authority": _find_issuing_authority(head, tail),
+        "published_at": _find_published_at(tail),
+        "effective_date": _find_effective_date(text),
+        "first_report_period": _find_first_report_period(text),
+        "regulatory_intent": _find_regulatory_intent(head),
+    }
+
+    filled = sum(1 for value in fields.values() if value)
+    if filled == 0:
+        status = "FAILED"
+    elif filled >= 4:
+        status = "OK"
+    else:
+        status = "PARTIAL"
+
+    return RegulatoryMetadata(**fields, status=status)
+
+
+def _find_doc_no(text: str) -> str:
+    for pattern in _DOC_NO_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return re.sub(r"\s+", " ", match.group(0)).strip()
+    return ""
+
+
+def _find_issuing_authority(head: str, tail: str) -> str:
+    found: list[str] = []
+    for source in (head, tail):
+        for authority in _KNOWN_AUTHORITIES:
+            if authority in source and authority not in found:
+                # 去重：如果已有更长名包含当前短名（如"中国人民银行"已存在时不再加"人民银行"）
+                if any(authority in existing and authority != existing for existing in found):
+                    continue
+                # 去重：如果当前名包含已有短名，替换
+                replaced = False
+                for i, existing in enumerate(list(found)):
+                    if existing in authority and existing != authority:
+                        found[i] = authority
+                        replaced = True
+                        break
+                if not replaced:
+                    found.append(authority)
+    return " / ".join(found)
+
+
+def _find_published_at(tail: str) -> str:
+    matches = list(_PUBLISHED_PATTERN.finditer(tail))
+    if not matches:
+        return ""
+    year, month, day = matches[-1].groups()
+    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+
+def _find_effective_date(text: str) -> str:
+    match = _EFFECTIVE_PATTERN.search(text)
+    if not match:
+        return ""
+    year, month, day = match.groups()
+    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+
+def _find_first_report_period(text: str) -> str:
+    # 季度优先
+    for pattern in _REPORT_PERIOD_PATTERNS[:2]:
+        match = pattern.search(text)
+        if match:
+            year, quarter = match.group(1), match.group(2)
+            return f"{int(year):04d}{_CN_QUARTER_MAP.get(quarter, 'Q?')}"
+    # 月度兜底
+    match = _REPORT_PERIOD_PATTERNS[2].search(text)
+    if match:
+        year, month = match.groups()
+        return f"{int(year):04d}-{int(month):02d}"
+    return ""
+
+
+def _find_regulatory_intent(head: str) -> str:
+    match = _INTENT_PATTERN.search(head)
+    if not match:
+        return ""
+    intent = match.group(1).strip()
+    intent = re.sub(r"\s+", "", intent)
+    if len(intent) > 300:
+        intent = intent[:300] + "…"
+    return intent

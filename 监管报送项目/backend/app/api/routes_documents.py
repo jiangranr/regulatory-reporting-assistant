@@ -38,7 +38,11 @@ from app.services.instruction_change_analyzer import (
     InstructionChangeAnalysis,
     analyze_instruction_changes,
 )
-from app.services.instruction_parser import parse_instruction_file, parsed_document_from_pair
+from app.services.instruction_parser import (
+    extract_regulatory_metadata,
+    parse_instruction_file,
+    parsed_document_from_pair,
+)
 from app.services import document_profiler
 from app.services.llm_client import LLMClientError
 from app.services import excel_parser as _excel_parser
@@ -48,6 +52,24 @@ from app.services.item_change_scanner import scan_and_annotate, build_change_sum
 from app.services.reporting_item_scope import filter_analysis_items
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+
+def _apply_regulatory_metadata(document: RegDocument, parsed_text: str) -> None:
+    """从解析后的正文抽取监管元数据并写入 document（mutating）。
+
+    抽取失败不阻塞上传——document.metadata_extraction_status 反映结果。
+    """
+    if not parsed_text:
+        document.metadata_extraction_status = "FAILED"
+        return
+    meta = extract_regulatory_metadata(parsed_text)
+    document.document_no = meta.document_no
+    document.issuing_authority = meta.issuing_authority
+    document.published_at = meta.published_at
+    document.effective_date = meta.effective_date
+    document.first_report_period = meta.first_report_period
+    document.regulatory_intent = meta.regulatory_intent
+    document.metadata_extraction_status = meta.status
 
 
 @router.post("/upload", response_model=RegDocumentRead, status_code=status.HTTP_201_CREATED)
@@ -82,6 +104,7 @@ async def upload_document(
         parse_quality=parsed.quality,
         parse_error_message=parsed.error_message,
     )
+    _apply_regulatory_metadata(document, parsed.text)
     session.add(document)
     session.commit()
     session.refresh(document)
@@ -124,6 +147,7 @@ async def upload_reporting_pair(
         parse_quality=parsed.quality,
         parse_error_message=parsed.error_message,
     )
+    _apply_regulatory_metadata(document, parsed.text)
     session.add(document)
     session.commit()
     session.refresh(document)
@@ -298,6 +322,7 @@ async def upload_reporting_triplet(
         parse_quality=parsed.quality,
         parse_error_message="\n".join(error_messages),
     )
+    _apply_regulatory_metadata(document, parsed.text)
     session.add(document)
     session.commit()
     session.refresh(document)
