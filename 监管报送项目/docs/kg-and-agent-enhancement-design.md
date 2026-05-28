@@ -12,10 +12,10 @@
 ### 0.1 一句话定位
 
 > 把现有"AI 应用层主流水平"升级到"**金融监管场景下 AI 工程方法论的领先实践**"，
-> 通过引入业务知识图谱可视化 + Self-Correcting + ReAct Tool-Using Agent 三套能力，
+> 通过引入业务知识图谱可视化 + Self-Correcting + ReAct Tool-Using Agent + 工单执行规划**四套能力**，
 > **不动**上传 / 画像 / 字段定位 / 影响分析 / 工单生成的主流程语义。
 
-### 0.2 三套能力的角色
+### 0.2 四套能力的角色
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -23,12 +23,13 @@
 │   上传 → 画像 → 字段定位 → 影响分析 → 工单                    │
 └─────────────────┬────────────────────────────────────────────┘
                   │
-                  │  内部能力（本设计新增）
+                  │  内部能力（本设计新增 4 套）
                   ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ 模块 A · 业务知识图谱可视化                                    │
 │   - 让"概念库 + 关系"的设计**显式化为图**                     │
 │   - 演示效果最强；技术含量在"可视化 + 关系遍历"               │
+│   - 解决：业务知识可视化诉求 / 概念辐射展示                   │
 ├──────────────────────────────────────────────────────────────┤
 │ 模块 B · Self-Correcting Loop（自纠错 Agent）                  │
 │   - 对 evidence_verified=false 的 signal 自动二次核验          │
@@ -37,8 +38,19 @@
 │ 模块 C · ReAct Tool-Using Agent                                │
 │   - 让 LLM 在解读监管发文时主动调用 4 个 service 工具          │
 │   - 解决"AI 是黑盒"的演示痛点                                 │
+├──────────────────────────────────────────────────────────────┤
+│ 模块 D · AI 工单执行规划 ⭐ 业务价值最高                       │
+│   - 让 LLM 把 N 个结构化子单整合成可执行的"项目经理视角"叙事   │
+│   - 解决：业务方拿到 9 个工单不知道先做哪个的"导航问题"        │
+│   - 输出：执行顺序 / 关键路径 / 风险预警 / 跨团队协作建议       │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+**四个模块的协作叙事**：
+- A 让**数据**可信（业务知识可视化）
+- B 让 **AI 输出**可信（自纠错锚定）
+- C 让 **AI 推理过程**可信（工具调用透明）
+- D 让 **AI 最终建议**可执行（项目经理视角整合）
 
 ### 0.3 设计 4 原则（金融场景核心）
 
@@ -597,31 +609,333 @@ def generate_document_profile(
 
 ---
 
-## 4 · 模块 D · 整合与跨切关注
+## 4 · 模块 D · AI 工单执行规划（业务价值最高）
 
-### 4.1 集成 timeline
+### 4.1 现状盘点 + 解决什么真问题
+
+Codex Task 5 完成后，工单页面会从"3000 字 Markdown"变成"结构化任务卡"，
+解决了"**每张工单内部清晰**"。
+
+但**整体维度的导航问题没解决**：
 
 ```
-Day 1  ─  A1 + A2  KG 后端 API + 前端可视化
-Day 2  ─  A3 + A4  LibraryView Tab + eval case
-Day 3  ─  B1       Self-Correcting Agent 实现
-Day 4  ─  B2       集成 + UI 三档徽章 + eval
-Day 5  ─  C1       ReAct 框架 + 4 个工具实现
-Day 6  ─  C2       document_profiler 集成 + AgentTraceView
-Day 7  ─  C3       前端联调 + eval case + 整合测试 + commit
+业务方现状：
+  10 个子单卡片在屏幕上
+  ↓
+  我先做哪一个？
+  哪些是阻塞我做下一步的？
+  哪些可以并行？
+  哪些团队该先去敲门？
+  最大风险在哪？
+  ↓
+  ❌ 没有答案，业务方迷茫
 ```
 
-合计 **7 个工作日**。
+模块 D 让 LLM 扮演**项目经理**角色，把 N 个子单整合成可执行的"执行规划总结"。
+**这是 AI 在业务价值最直白的一次体现**。
 
-### 4.2 跟 Codex 那边的协作边界
+### 4.2 形态 — ReviewTicketView 顶部新增"🎯 AI 执行规划"卡片
+
+视觉示例：
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ 🎯 AI 执行规划                              [收起]            │
+│ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━           │
+│                                                                │
+│ 📋 全局摘要                                                    │
+│ 本次变更影响 G24 同业融入 + G31 投资业务两张报表，涉及        │
+│ 数据治理 / 数据集市 / 数据质量 3 个团队的协作。               │
+│ 预估完成时间：2-3 周。                                         │
+│                                                                │
+│ 📅 推荐执行顺序                                                │
+│                                                                │
+│   第 1 周（关键路径 · 这两个不完成下游做不了）                 │
+│     □ [数据治理] 确认 G24 同业融入字段血缘  ⛔阻塞下游         │
+│     □ [业务部] 确认拆放同业纳入统计口径    ⛔阻塞下游          │
+│                                                                │
+│   第 2 周（可并行）                                            │
+│     □ [数据集市] 调整 ETL 加工逻辑                             │
+│     □ [源系统] 评估是否需新增字段                              │
+│     □ [数据质量] 新增跨表勾稽校验规则                          │
+│                                                                │
+│   第 3 周（收尾）                                              │
+│     □ [测试] 回归用例覆盖                                      │
+│     □ [报送管理] 归档 + 经验入库                               │
+│                                                                │
+│ ⚠️ 关键风险（共 2 条）                                         │
+│                                                                │
+│   🔴 高：1.8.4 "其他子项"删除涉及历史数据追溯，               │
+│           可能需要重算 6 个月数据                             │
+│   🟡 中：拆放同业为新增统计范围，源系统团队暂未确认是否        │
+│           需新增字段，建议第 1 周完成与源系统对齐              │
+│                                                                │
+│ 🤝 跨团队协作建议                                              │
+│ 数据治理与业务部需在第 1 周同步对齐口径（建议拉一个联合会议），│
+│ 否则数据集市的 ETL 改造无法启动。                              │
+│                                                                │
+│ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━           │
+│ 📜 该规划由 AI 基于上述工单事实生成，依据可追溯（点击查看）    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 4.3 输入数据
+
+```python
+ExecutionPlannerInput = {
+    "document_summary": str,                  # 监管发文摘要（取 profile.evidence_text）
+    "tables_affected": list[str],             # ["G24", "G31"]
+    "impact_items": list[ReportingImpactDraft],  # 影响项清单
+    "concept_hits": list[ConceptMatchHit],    # 命中的概念
+    "parent_ticket": TicketDraftRead,         # 母单
+    "child_tickets": list[TicketDraftRead],   # 全部子单（带 card 结构化字段）
+    "historical_cases": list[dict] | None,    # 历史相似案例（W2 后真实化）
+}
+```
+
+### 4.4 LLM Prompt 设计（防幻觉关键）
+
+```python
+SYSTEM_PROMPT = """
+你是银行数据治理项目经理，需要把以下监管报送变更工单整合成一份**面向业务方的执行规划**。
+
+【严格约束】
+1. 你只能基于下方提供的工单事实做规划，**不允许虚构**风险点或团队
+2. 每个推荐的执行项必须 reference 一个具体子单 ID
+3. 风险点必须基于工单的 blockers 字段或影响项内容，不能凭空推断
+4. 团队推荐只能从以下 7 个责任系统选：
+   REG_REPORTING_SYSTEM / DATA_GOVERNANCE_PLATFORM / DATA_MART_ETL /
+   SOURCE_SYSTEM / DATA_QUALITY_PLATFORM / TEST_ACCEPTANCE / KNOWLEDGE_ARCHIVE
+5. 工期预估必须给区间（如"2-3 周"），不允许给确定数字
+6. 全文不超过 500 字
+7. 输出必须是合法 JSON，符合下方 schema
+"""
+
+USER_PROMPT = f"""
+【监管变更背景】
+{document_summary}
+
+【影响报表】{tables_affected}
+【影响指标数】{len(impact_items)}
+【关联概念数】{len(concept_hits)}
+
+【已拆分的子单】
+{json.dumps(child_tickets, ensure_ascii=False, indent=2)}
+
+【历史相似变更案例（参考用）】
+{historical_cases or "（暂无历史案例）"}
+
+请生成 JSON 格式的执行规划：
+{{
+  "executive_summary": "2-3 句话全局摘要",
+  "estimated_duration": "如 '2-3 周'",
+  "execution_phases": [
+    {{
+      "phase_name": "第 1 周（关键路径）",
+      "tasks": [
+        {{
+          "team": "DATA_GOVERNANCE_PLATFORM",
+          "team_zh": "数据治理团队",
+          "action": "确认 G24 同业融入字段血缘",
+          "ticket_id": 123,
+          "is_blocker": true,
+          "blocker_reason": "下游 ETL 改造依赖字段映射"
+        }}
+      ]
+    }}
+  ],
+  "critical_risks": [
+    {{
+      "severity": "HIGH",
+      "description": "...",
+      "ticket_id_ref": 124,
+      "mitigation": "建议..."
+    }}
+  ],
+  "team_coordination": "1-2 句协作建议"
+}}
+"""
+```
+
+### 4.5 输出 schema
+
+```python
+class ExecutionTask(BaseModel):
+    team: str                        # ResponsibleSystem 枚举
+    team_zh: str
+    action: str
+    ticket_id: int
+    is_blocker: bool
+    blocker_reason: str = ""
+
+class ExecutionPhase(BaseModel):
+    phase_name: str                  # "第 1 周（关键路径）"
+    tasks: list[ExecutionTask]
+
+class CriticalRisk(BaseModel):
+    severity: str                    # HIGH / MEDIUM / LOW
+    description: str
+    ticket_id_ref: int | None        # 引用哪条子单
+    mitigation: str
+
+class ExecutionPlan(BaseModel):
+    executive_summary: str
+    estimated_duration: str
+    execution_phases: list[ExecutionPhase]
+    critical_risks: list[CriticalRisk]
+    team_coordination: str
+    # 元数据
+    generated_at: datetime
+    generated_by: str                # llm model name
+    confidence: float                # 由核验逻辑给出
+```
+
+### 4.6 持久化
+
+新表 `reg_task_execution_plan`：
+
+```sql
+CREATE TABLE reg_task_execution_plan (
+  id              BIGINT PK,
+  task_id         BIGINT UNIQUE,           -- 一个 task 一份最新规划
+  plan_content    JSON,                    -- ExecutionPlan 完整序列化
+  generated_at    DATETIME,
+  generated_by    VARCHAR(64),
+  confidence      DECIMAL(3,2),
+  feedback_thumbs INT DEFAULT 0,
+  status          ENUM('VALID', 'STALE', 'INVALID'),  -- 工单改了标 STALE
+  created_at      DATETIME,
+  updated_at      DATETIME
+);
+```
+
+工单更新时触发：`task_execution_plan.status = STALE`，下次进页面提示"工单已变更，规划可能过期，重新生成？"
+
+### 4.7 API 设计
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/tasks/{task_id}/execution-plan` | POST | 生成新规划（覆盖旧的） |
+| `/api/tasks/{task_id}/execution-plan` | GET | 拉最近一次生成的规划 |
+| `/api/tasks/{task_id}/execution-plan/feedback` | PATCH | 业务方点赞/拍砖反馈 |
+
+### 4.8 防幻觉机制（关键）
+
+| 防御层 | 做法 |
+|---|---|
+| **Prompt 约束** | 强制 reference ticket_id；team 限定枚举；不允许虚构 |
+| **输出核验** | 解析 JSON 后逐项核：team 在枚举内 / ticket_id 存在 / severity 合规 |
+| **失败兜底** | 任一核验失败 → 不展示 AI 规划，UI 回退"按子单创建顺序展示" |
+| **可追溯展示** | 卡片底部 "📜 依据可追溯" 链接展开所引用的子单原文 |
+| **业务方反馈** | UI 上每条规划项可 👍/👎 反馈，进 audit_logs |
+
+### 4.9 前端设计
+
+新组件 `ExecutionPlanCard.vue`：
+
+- 集成到 `ReviewTicketView.vue` 顶部（Codex Task 5 完成后整合）
+- 折叠式卡片，默认展开
+- 包含：摘要 + 执行阶段时间轴 + 风险预警表 + 协作建议
+- 每个 task 是 chip 形式，点击跳转到对应子单详情
+- 风险条目按 severity 颜色区分（🔴/🟡/🟢）
+- 底部"📜 依据可追溯"展开 AI 引用的子单原文片段
+
+### 4.10 eval 锁住
+
+新增 case `agent_execution_planner.json`：
+
+```json
+{
+  "id": "agent_execution_planner",
+  "description": "LLM 生成的执行规划必须 reference 真实存在的子单 ID，不发明团队",
+  "target": "execution_planner",
+  "inputs": { "task_id": 123 },
+  "expectations": [
+    {
+      "kind": "must_contain",
+      "spec": { "keyword": "DATA_GOVERNANCE_PLATFORM" },
+      "reason": "G24 字段映射子单必须分到数据治理团队"
+    },
+    {
+      "kind": "all_signals_match",
+      "spec": { "field": "team_in_enum", "in": ["true"] },
+      "reason": "所有 team 必须在 ResponsibleSystem 枚举内"
+    },
+    {
+      "kind": "all_signals_match",
+      "spec": { "field": "ticket_id_valid", "in": ["true"] },
+      "reason": "所有 ticket_id 必须真实存在"
+    }
+  ]
+}
+```
+
+### 4.11 可宣称话术
+
+> ✅ "**AI 工单执行规划**：LLM 扮演项目经理角色，把 N 个结构化子单整合成
+> 可执行的'执行顺序 + 关键路径 + 风险预警 + 跨团队协作建议'。
+> 输出严格基于工单事实，不发明风险，每项可追溯到具体子单 ID。"
+
+不要宣称：
+
+- ❌ "AI 自动决策" — 是 AI 建议，业务方决策
+- ❌ "完全自动化项目管理" — 我们是辅助不是替代
+- ❌ "自研项目管理 AI" — 是 LLM prompted output
+
+### 4.12 验收标准
+
+- [ ] `ticket_execution_planner.py` 实现 + unit test（mock LLM）
+- [ ] `reg_task_execution_plan` 表 migration 通过
+- [ ] 3 个 API 端点（POST/GET/PATCH）实现并测试
+- [ ] 输出核验逻辑：team 枚举 / ticket_id 存在 / severity 合规
+- [ ] 失败兜底：核验失败时不展示，回退按时间排序
+- [ ] `ExecutionPlanCard.vue` 渲染正确
+- [ ] 工单更新触发 status=STALE
+- [ ] eval case 通过
+- [ ] audit_logs 完整留痕（生成 + 反馈）
+
+---
+
+## 5 · 整合与跨切关注
+
+### 5.1 集成 timeline（推荐 D 优先）
+
+**业务价值优先排序（推荐）**：
+
+```
+Day 1-3   ─  模块 D 工单执行规划 ⭐ 业务价值最高，先做
+Day 4-5   ─  模块 A KG 可视化（演示视觉冲击）
+Day 6-7   ─  模块 B Self-Correcting Loop（真解决幻觉）
+Day 8-10  ─  模块 C ReAct Tool-Using Agent
+```
+
+合计 **10 个工作日**。
+
+**为什么 D 优先**：
+- D 直接解决业务方"拿到工单不知道先做哪个"的核心痛点
+- 跟 Codex Task 5 完美衔接（Task 5 结构化工单 → D 加 LLM 总结）
+- 工作量小（3 天）+ 演示效果直白（评委一眼能看出"AI 真有用"）
+- 不依赖其他模块，独立性强
+
+**保守备选排序**：
+
+```
+Day 1-2   ─  模块 A KG 可视化（先把数据展示做好）
+Day 3-4   ─  模块 B Self-Correcting Loop
+Day 5-7   ─  模块 C ReAct Tool-Using Agent
+Day 8-10  ─  模块 D 工单执行规划
+```
+
+### 5.2 跟 Codex 那边的协作边界
 
 | Codex 在做 | 我们这里在做 | 冲突点 | 缓解 |
 |---|---|---|---|
+| Task 5 ReviewTicketView 前端 | **模块 D 前端 ExecutionPlanCard** | 都改 ReviewTicketView | **D 加在顶部，Codex Task 5 改的是工单列表/卡片，垂直方向无冲突** |
 | Task 5 ReviewTicketView 前端 | 模块 A KG 前端 / 模块 C AgentTraceView | 都改前端 | 不同 view，零冲突 |
-| Task 5 类型 ts | 模块 A 的 ConceptGraph 类型 | 改 types/api.ts | 各加各的 interface，无冲突 |
-| Task 6 端到端回归 | 模块 B/C 加新 case | 都跑 eval | 我们多加几个 case，Codex 顺带验 |
+| Task 5 类型 ts | 模块 A ConceptGraph / 模块 D ExecutionPlan 类型 | 改 types/api.ts | 各加各的 interface，无冲突 |
+| Task 6 端到端回归 | 模块 B/C/D 加新 case | 都跑 eval | 我们多加几个 case，Codex 顺带验 |
 
-### 4.3 不破坏存量的硬约束
+### 5.3 不破坏存量的硬约束
 
 | 既有功能 | 是否受影响 |
 |---|---|
@@ -629,9 +943,10 @@ Day 7  ─  C3       前端联调 + eval case + 整合测试 + commit
 | `/api/concepts/match` | 不动；保留长别名优先 + 多路召回 |
 | `document_profiler.generate_document_profile()` 默认行为 | 不动；`use_agent=False` 是默认 |
 | `RegConcept` / `RegConceptRelation` 等表 schema | 不动 |
+| `TicketDraft` 表 schema | 不动；模块 D 新建独立 `reg_task_execution_plan` 表 |
 | 既有 19 个 eval case | 不动，新增 case 不破坏老的 |
 
-### 4.4 风险与缓解
+### 5.4 风险与缓解
 
 | 风险 | 缓解 |
 |---|---|
@@ -640,8 +955,10 @@ Day 7  ─  C3       前端联调 + eval case + 整合测试 + commit
 | 评委追问 "你这 Agent 多智能" | 诚实答："局部 Agent 模式，非全自主，重在可控可审计" |
 | KG 关系太稀疏（23 个 concept 才几条关系） | 立项后 LLM 抽取 + 业务方审核扩到 100+ concept / 100+ relation |
 | cytoscape.js 引入打包体积涨 | 估算 +200KB gzip；可接受。或用 d3-force 替代（更轻量） |
+| **模块 D 执行规划 LLM 发明风险点** | Prompt 强约束 + 输出 JSON 核验 + 失败兜底回退到"按时间排序" |
+| **模块 D 工单变更后规划过期** | 工单更新触发 `status=STALE` + UI 提示"规划已过期" |
 
-### 4.5 跟既有"诚实清单"的关系
+### 5.5 跟既有"诚实清单"的关系
 
 参照 `feasibility-audit.md`：
 
@@ -652,18 +969,18 @@ Day 7  ─  C3       前端联调 + eval case + 整合测试 + commit
 | #3 概念库治理流程缺失 | ⚠️ 不解决（流程问题，需文档化） |
 | #4 落格率 6/10 没路线 | ⚠️ 不解决 |
 | #5 概念辐射映射没人背书 | ⚠️ 不解决 |
-| #6 拆单规则没业务方验证 | ⚠️ 不解决 |
-| #7 eval 自评是否过松 | ✅ 模块 A/B/C 各自加 case，提升 eval 严格度 |
+| #6 拆单规则没业务方验证 | ⚠️ 不解决（但 **模块 D 让"工单价值不够"的痛点被部分对冲** — AI 帮业务方导航，弱化了对子单本身合理性的依赖） |
+| #7 eval 自评是否过松 | ✅ 模块 A/B/C/D 各自加 case，提升 eval 严格度 |
 
-**本设计聚焦于把"AI 能力的展示性 + 可控性"两点做强**，不试图解决所有 audit 风险。
+**本设计聚焦于把"AI 能力的展示性 + 可控性 + 业务可执行性"三点做强**，不试图解决所有 audit 风险。
 
 ---
 
-## 5 · 演示故事整合
+## 6 · 演示故事整合
 
-### 5.1 demo 期望体验路径
+### 6.1 demo 期望体验路径
 
-**5 分钟 demo 脚本（含本设计三个模块）**：
+**5 分钟 demo 脚本（含本设计四个模块）**：
 
 ```
 [0:00 - 1:00]  开场 + 业务问题  
@@ -689,83 +1006,121 @@ Day 7  ─  C3       前端联调 + eval case + 整合测试 + commit
   - 点击 corrected 标记 → 显示"原本未锚定，自纠错 Agent 经 1 次重试找到原文"
   - 关键卖点："**AI 不发明事实，发明了被自动标记**"
 
-[3:30 - 4:30]  字段定位 + 工单生成（现有）
+[3:30 - 4:00]  字段定位 + 工单生成（现有）
   - LineageView 概念命中 + 字段血缘
   - 工单结构化任务卡（Codex Task 5）
 
-[4:30 - 5:00]  收尾
+[4:00 - 4:45]  AI 工单执行规划   ← 模块 D ⭐ 业务价值峰值
+  - 工单页面顶部展开 "🎯 AI 执行规划" 卡片
+  - 展示执行顺序：第 1 周关键路径 / 第 2 周并行 / 第 3 周收尾
+  - 展示 2 条风险预警（标红/黄等级）+ 跨团队协作建议
+  - 点击 "📜 依据可追溯" 展开 AI 引用的具体子单原文
+  - 关键卖点："**AI 不只是抽信息，AI 像项目经理一样把工单整合成可执行计划**"
+
+[4:45 - 5:00]  收尾
   - 工程严谨证据：149 测试 / 21 eval case / git history
   - 一句话：本项目不创新 AI 模型，**创新的是金融监管场景下 AI 落地的工程方法论**
 ```
 
-### 5.2 答辩关键话术（与 feasibility-audit §13 对齐）
+### 6.2 答辩关键话术（与 feasibility-audit §13 对齐）
 
-新增 3 条罐头话术：
+新增 4 条罐头话术：
 
 | 追问 | 30 秒话术 |
 |---|---|
 | "你这个 KG 怎么做的" | 基于 7 种语义关系（INCLUDES/EXCLUDES/SUBSET_OF 等）建模概念网络。当前 23 个种子概念，演示概念辐射可视化。立项后扩到 100+ 概念 + LLM 抽取关系 + 业务方审核 |
 | "Agent 多智能" | 是 ReAct 模式的**局部 Agent**，非全自主。LLM 主动调 4 个工具（概念匹配 / 字段定位 / 规则查询 / 历史决策），每步可暂停可接管可审计。**银行高合规场景下的可控 Agent 模式**，不是 AutoGPT |
 | "幻觉怎么自动纠错" | Self-Correcting Loop：所有 LLM 输出做原文锚定核验，未通过的启动二次纠错（最多 2 次重试），仍未锚定的隔离到人工审核队列。**AI 不发明事实，发明了被自动标记**。审计 trail 完整 |
+| "**AI 真能帮业务方做事吗**" | **模块 D 工单执行规划**：LLM 扮演项目经理角色，把 10 个子单整合成"第 1 周关键路径 / 第 2 周并行 / 第 3 周收尾"的可执行规划，标红风险点，给跨团队协作建议。每项建议可追溯到具体子单。**这不是 demo 表演，业务方真用得上** |
 
 ---
 
-## 6 · 实施 checklist
+## 7 · 实施 checklist
 
-### 6.1 后端
+### 7.1 后端
 
+**模块 D（推荐先做）**
+- [ ] `app/services/ticket_execution_planner.py` 新建（含输出 JSON 核验）
+- [ ] `app/models/db_models.py` 加 `RegTaskExecutionPlan` 表
+- [ ] `app/models/schemas.py` 加 ExecutionPlan / ExecutionPhase / ExecutionTask / CriticalRisk 类型
+- [ ] `app/api/routes_tasks.py` 加 POST/GET `/api/tasks/{id}/execution-plan` + PATCH /feedback
+- [ ] 工单更新时触发 `execution_plan.status = STALE`
+- [ ] audit_logs 写入生成 + 反馈动作
+
+**模块 A KG**
 - [ ] `app/services/concept_graph_service.py` 新建
 - [ ] `app/api/routes_concepts.py` 加 `/api/concepts/graph` endpoint
+
+**模块 B Self-Correcting**
 - [ ] `app/services/self_correcting_agent.py` 新建
 - [ ] `app/services/document_profiler.py` 集成 Self-Correcting Loop
+
+**模块 C ReAct Agent**
 - [ ] `app/services/agent_tools.py` 4 个工具实现
 - [ ] `app/services/react_agent.py` 新建
 - [ ] `app/services/document_profiler.py` 加 `use_agent` 参数
 - [ ] `app/api/routes_documents.py` opt-in 传 use_agent
 - [ ] audit_logs 写入所有 Agent 动作
 
-### 6.2 前端
+### 7.2 前端
 
+**模块 D（推荐先做）**
+- [ ] `frontend/src/components/ExecutionPlanCard.vue` 新建（折叠卡片）
+- [ ] `frontend/src/views/ReviewTicketView.vue` 顶部集成（避开 Codex Task 5 改动区）
+- [ ] `frontend/src/types/api.ts` 加 ExecutionPlan / ExecutionTask / CriticalRisk 类型
+- [ ] `frontend/src/api/client.ts` 加 fetchExecutionPlan / generateExecutionPlan / sendFeedback 接口
+
+**模块 A KG**
 - [ ] 安装 cytoscape.js（pnpm add cytoscape）
 - [ ] `frontend/src/views/ConceptGraphView.vue` 新建
 - [ ] `frontend/src/views/LibraryView.vue` 加图谱 Tab
+
+**模块 B Self-Correcting**
 - [ ] `frontend/src/views/PortraitView.vue` 加 verified / corrected / quarantined 三档徽章
+
+**模块 C ReAct Agent**
 - [ ] `frontend/src/views/PortraitView.vue` 加 "🤖 Agent 模式" 按钮
 - [ ] `frontend/src/views/AgentTraceView.vue` 新建（或抽屉形态）
 - [ ] `frontend/src/types/api.ts` 加 ConceptGraph / AgentStep / AgentTrace 类型
 - [ ] `frontend/src/api/client.ts` 加 fetchConceptGraph / runAgent 接口
 
-### 6.3 测试
+### 7.3 测试
 
-- [ ] `tests/eval/targets.py` 加 concept_graph + react_agent + self_correcting target
+- [ ] `tests/eval/targets.py` 加 execution_planner + concept_graph + react_agent + self_correcting target
+- [ ] `tests/eval/cases/agent_execution_planner.json`
 - [ ] `tests/eval/cases/concept_graph_traversal.json`
 - [ ] `tests/eval/cases/agent_self_correcting.json`
 - [ ] `tests/eval/cases/agent_react_e2e.json`
+- [ ] `tests/test_ticket_execution_planner.py` unit test（mock LLM + 核验逻辑）
 - [ ] `tests/test_concept_graph_service.py` unit test
 - [ ] `tests/test_self_correcting_agent.py` unit test（mock LLM）
 - [ ] `tests/test_react_agent.py` unit test（mock LLM + tools）
 - [ ] 全套 pytest 通过
 
-### 6.4 文档
+### 7.4 文档
 
 - [ ] `docs/README.md` 索引加本设计文档
 - [ ] `feasibility-audit.md` 补充：风险 #2 已通过本设计缓解
 
 ---
 
-## 7 · 决议待定项（需用户确认）
+## 8 · 决议待定项（需用户确认）
 
 提交本设计前请审查：
 
-1. **KG 可视化库选型**：cytoscape.js（推荐）vs d3-force vs vis.js？
-2. **Agent 是否默认启用**：当前设计是 opt-in（默认禁用，业务方点按钮启用）。是否应该 demo 时默认启用以提升演示效果？
-3. **Self-Correcting max_retries**：当前设计 2 次，是否合适？
-4. **ReAct max_steps**：当前设计 10 步，是否合适？
-5. **是否需要"接管"按钮**：用户在 AgentTraceView 看到某步走偏，能不能介入修改 prompt 重新跑？这会大幅增加复杂度
-6. **跟 cytoscape.js 同时引入打包体积涨 200KB**，是否接受？
+1. **实施顺序**：先做 D（业务价值最高）→ A → B → C？还是按 A → B → C → D 顺序？**推荐前者**
+2. **模块 D Prompt 是否走 LLM mock**：现网必须真调 LLM；eval / unit test 用 mock；现场 demo 是否需要预录 LLM 响应作为兜底？
+3. **KG 可视化库选型**：cytoscape.js（推荐）vs d3-force vs vis.js？
+4. **Agent 是否默认启用**：当前设计是 opt-in（默认禁用，业务方点按钮启用）。是否应该 demo 时默认启用以提升演示效果？
+5. **Self-Correcting max_retries**：当前设计 2 次，是否合适？
+6. **ReAct max_steps**：当前设计 10 步，是否合适？
+7. **是否需要"接管"按钮**：用户在 AgentTraceView 看到某步走偏，能不能介入修改 prompt 重新跑？这会大幅增加复杂度
+8. **跟 cytoscape.js 同时引入打包体积涨 200KB**，是否接受？
+9. **模块 D 工单变更后规划过期处理**：标 STALE 但不自动重生成，让业务方手动点"重新生成"？还是后台静默重生？
 
 ---
 
 ## 修订记录
 
-- 2026-05-27 初版（Claude 起草）
+- 2026-05-27 初版（Claude 起草，含 A/B/C 三模块）
+- 2026-05-27 v2（加入模块 D · AI 工单执行规划，调整 timeline 推荐 D 优先）
