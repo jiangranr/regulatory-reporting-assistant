@@ -30,6 +30,7 @@ def create_app() -> FastAPI:
     api.include_router(routes_documents.router)
     api.include_router(routes_reporting.router)
     api.include_router(routes_tasks.router)
+    api.include_router(routes_tasks.ticket_router)
     api.include_router(routes_catalog.router)
     api.include_router(routes_rule_cards.router)
     api.include_router(routes_concepts.router)

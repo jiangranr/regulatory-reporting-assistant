@@ -507,7 +507,7 @@ def _render_card_markdown(
         "",
         "## 责任分配",
         "",
-        f"- 责任系统：{card.responsible_system.value}",
+        f"- 责任系统：{card.responsible_system}",
         f"- 出口责任 (A)：{card.owner_role.value}",
         f"- 执行人 (R)：{card.executor_role.value}",
         "",

@@ -84,6 +84,9 @@ class ReportingImpactItemRead(BaseModel):
     impacted_reporting_field: str
     impacted_source_fields: list[str]
     impacted_lineage_roles: list[str] = []
+    # 每条 lineage 字段的明细，含真实 system_code/system_name/system_type/owner_team。
+    # baseline 分桶完全依赖这个字段；空数组代表是旧 impact 记录，会落到 UNKNOWN 桶。
+    impacted_source_field_details: list[dict[str, str]] = []
     impact_reason: str = ""
     recommended_action: str
     ticket_parent_type: str = ""
@@ -594,4 +597,42 @@ class ExecutionPlanFeedbackRequest(BaseModel):
 
 
 class ExecutionPlanFeedbackResponse(BaseModel):
+    ok: bool = True
+
+
+# ── 参考 SQL 生成 API schemas ───────────────────────────────────────────────
+
+class SqlWarningRead(BaseModel):
+    type: str                    # FIELD_NOT_IN_SCOPE / TABLE_NOT_IN_CATALOG / SYNTAX_ERROR / LLM_FAILED
+    message: str
+    field_code: str = ""
+    severity: str = "WARNING"    # ERROR / WARNING / INFO
+
+
+class ReferenceSqlResponse(BaseModel):
+    ticket_id: int
+    status: str                  # NOT_GENERATED / READY / DEGRADED / EDITED_BY_USER / STALE / NOT_APPLICABLE
+    ability: str = ""            # CAN_GENERATE / PARTIAL / VALIDATION_ONLY / NOT_APPLICABLE
+    reference_sql: str = ""
+    sql_dialect: str = "ANSI"
+    confidence: float = 0.0
+    explanation: str = ""
+    assumptions: list[str] = []
+    warnings: list[SqlWarningRead] = []
+    not_applicable_reason: str = ""
+    generated_at: datetime | None = None
+    generated_by: str = ""
+
+
+class ReferenceSqlSaveRequest(BaseModel):
+    reference_sql: str
+    comment: str = ""
+
+
+class ReferenceSqlFeedbackRequest(BaseModel):
+    thumbs: str                  # "up" / "down"
+    comment: str = ""
+
+
+class ReferenceSqlFeedbackResponse(BaseModel):
     ok: bool = True

@@ -520,7 +520,7 @@ def _persist_review_system_child_ticket(
     group: dict,
     session: Session,
 ) -> TicketDraft:
-    action_type = _action_type_for_system(group["responsible_system"])
+    action_type = _action_type_for_system_type(group.get("system_type") or "")
     card = _review_group_card(action_type, group)
     quality = check_ticket_card_quality(card)
     row = TicketDraft(
@@ -536,8 +536,8 @@ def _persist_review_system_child_ticket(
         business_signoff_required=bool(group.get("business_notes")),
         related_impact_codes=json.dumps(_all_group_item_codes(group), ensure_ascii=False),
         summary=card.summary,
-        responsible_system=card.responsible_system.value,
-        affected_systems=json.dumps([card.responsible_system.value], ensure_ascii=False),
+        responsible_system=card.responsible_system,
+        affected_systems=json.dumps([card.responsible_system], ensure_ascii=False),
         affected_assets=json.dumps(card.affected_assets, ensure_ascii=False),
         business_note="\n".join(group.get("business_notes", [])),
         must_do=json.dumps(card.must_do, ensure_ascii=False),
@@ -571,6 +571,8 @@ def _persist_review_support_child_ticket(
     support_group = {
         "responsible_system": system_code.value,
         "responsible_system_zh": SYSTEM_LABELS[system_code.value],
+        "system_type": "",
+        "owner_team": "",
         "items": [
             item
             for group in grouped.values()
@@ -597,8 +599,8 @@ def _persist_review_support_child_ticket(
         closure_review_required=action_type == ActionTicketType.ARCHIVE_REVIEW,
         related_impact_codes=json.dumps(_all_group_item_codes(support_group), ensure_ascii=False),
         summary=card.summary,
-        responsible_system=card.responsible_system.value,
-        affected_systems=json.dumps([card.responsible_system.value], ensure_ascii=False),
+        responsible_system=card.responsible_system,
+        affected_systems=json.dumps([card.responsible_system], ensure_ascii=False),
         affected_assets=json.dumps(card.affected_assets, ensure_ascii=False),
         business_note="\n".join(dict.fromkeys(support_group.get("business_notes", []))),
         must_do=json.dumps(card.must_do, ensure_ascii=False),
@@ -634,7 +636,9 @@ def _review_group_card(action_type: ActionTicketType, group: dict) -> TicketTask
         action_type=action_type,
         owner_role=spec.owner_role,
         executor_role=spec.executor_role,
-        responsible_system=ResponsibleSystem(group["responsible_system"]),
+        # 新流程传 system_code（如 "RPT_1104"），旧支持单传 ResponsibleSystem 的 enum value，
+        # 都是字符串，TicketTaskCard.responsible_system 已经放宽到 str。
+        responsible_system=str(group["responsible_system"]),
         summary=summary,
         affected_assets=_review_affected_assets(group),
         must_do=_review_must_do(action_type, fields),
@@ -690,22 +694,27 @@ def _review_must_do(action_type: ActionTicketType, fields: list[dict]) -> list[s
     return spec_items
 
 
-def _action_type_for_system(system_code: str) -> ActionTicketType:
-    mapping = {
-        ResponsibleSystem.REG_REPORTING_SYSTEM.value: ActionTicketType.SCOPE_CONFIRM,
-        ResponsibleSystem.DATA_GOVERNANCE_PLATFORM.value: ActionTicketType.DATA_MAPPING,
-        ResponsibleSystem.DATA_MART_ETL.value: ActionTicketType.REPORT_PROCESSING,
-        ResponsibleSystem.SOURCE_SYSTEM.value: ActionTicketType.SOURCE_SYSTEM_CHANGE,
-        ResponsibleSystem.DATA_QUALITY_PLATFORM.value: ActionTicketType.VALIDATION_RULE,
-        ResponsibleSystem.TEST_ACCEPTANCE.value: ActionTicketType.TEST_ACCEPTANCE,
-        ResponsibleSystem.KNOWLEDGE_ARCHIVE.value: ActionTicketType.ARCHIVE_REVIEW,
-    }
-    return mapping.get(system_code, ActionTicketType.DATA_MAPPING)
+def _action_type_for_system_type(system_type: str) -> ActionTicketType:
+    """按 data_system_catalog.system_type 推子单 action_type。
+
+    - REPORTING/MART/DM：报送加工类（数据开发团队改 SQL/ETL）
+    - SOURCE/ODS/MDM：源系统改造类（源系统团队补字段/接口）
+    - 缺失或未识别：兜底走 DATA_MAPPING（数据治理走映射核对）
+
+    旧抽象桶（TEST_ACCEPTANCE/KNOWLEDGE_ARCHIVE）走的是 _persist_review_support_child_ticket，
+    那条路径直接传 ActionTicketType，不经过这里。
+    """
+    normalized = (system_type or "").strip().upper()
+    if normalized in {"REPORTING", "MART", "DM"}:
+        return ActionTicketType.REPORT_PROCESSING
+    if normalized in {"SOURCE", "ODS", "MDM"}:
+        return ActionTicketType.SOURCE_SYSTEM_CHANGE
+    return ActionTicketType.DATA_MAPPING
 
 
 def _render_review_child_markdown(card: TicketTaskCard, notes: list[str]) -> str:
     lines = [
-        f"# {card.responsible_system.value} 系统子单",
+        f"# {card.responsible_system} 系统子单",
         "",
         f"## 摘要\n{card.summary}",
         "",
@@ -788,9 +797,9 @@ def _persist_child_ticket(
         related_impact_codes=json.dumps(child.related_impact_codes, ensure_ascii=False),
         # 结构化任务卡字段（仅触发器路径有，固定矩阵/L1 兜底分支留空字符串保持向后兼容）
         summary=card.summary if has_card else "",
-        responsible_system=card.responsible_system.value if has_card else "",
+        responsible_system=card.responsible_system if has_card else "",
         affected_systems=(
-            json.dumps([card.responsible_system.value], ensure_ascii=False)
+            json.dumps([card.responsible_system], ensure_ascii=False)
             if has_card
             else "[]"
         ),
@@ -871,6 +880,7 @@ def _load_impact_items(task_id: int, session: Session) -> list[ReportingImpactIt
             impacted_reporting_field=row.impacted_reporting_field,
             impacted_source_fields=json.loads(row.impacted_source_fields or "[]"),
             impacted_lineage_roles=json.loads(row.impacted_lineage_roles or "[]"),
+            impacted_source_field_details=json.loads(row.impacted_source_field_details or "[]"),
             impact_reason=row.impact_reason,
             recommended_action=row.recommended_action,
             confidence_level=row.confidence_level,
@@ -1052,6 +1062,9 @@ def _replace_reporting_impacts(
                 impacted_reporting_field=impact.impacted_reporting_field,
                 impacted_source_fields=json.dumps(impact.impacted_source_fields, ensure_ascii=False),
                 impacted_lineage_roles=json.dumps(impact.impacted_lineage_roles, ensure_ascii=False),
+                impacted_source_field_details=json.dumps(
+                    impact.impacted_source_field_details, ensure_ascii=False
+                ),
                 impact_reason=impact.impact_reason,
                 recommended_action=impact.recommended_action,
                 confidence_level=impact.confidence_level,
@@ -1067,6 +1080,7 @@ def _impact_read_from_draft(impact: ReportingImpactDraft) -> ReportingImpactItem
         impacted_reporting_field=impact.impacted_reporting_field,
         impacted_source_fields=impact.impacted_source_fields,
         impacted_lineage_roles=impact.impacted_lineage_roles,
+        impacted_source_field_details=impact.impacted_source_field_details,
         impact_reason=impact.impact_reason,
         recommended_action=impact.recommended_action,
         ticket_parent_type=impact.ticket_parent_type,
@@ -1085,6 +1099,7 @@ def _impact_draft_from_read(impact: ReportingImpactItemRead) -> ReportingImpactD
         impacted_reporting_field=impact.impacted_reporting_field,
         impacted_source_fields=impact.impacted_source_fields,
         impacted_lineage_roles=impact.impacted_lineage_roles,
+        impacted_source_field_details=impact.impacted_source_field_details,
         impact_reason=impact.impact_reason,
         recommended_action=impact.recommended_action,
         ticket_parent_type=impact.ticket_parent_type,
@@ -1571,3 +1586,226 @@ def _persist_execution_plan(
         row.updated_at = now
     session.add(row)
     session.commit()
+
+
+# ============================================================================
+# 参考 SQL 生成（Reference SQL Generator）
+# 见 docs/superpowers/plans/2026-05-29-reference-sql-generator.md
+# ============================================================================
+
+from app.models.schemas import (  # noqa: E402
+    ReferenceSqlResponse,
+    ReferenceSqlSaveRequest,
+    ReferenceSqlFeedbackRequest,
+    ReferenceSqlFeedbackResponse,
+    SqlWarningRead,
+)
+from app.services.ticket_sql_generator import (  # noqa: E402
+    FieldContext,
+    RegDocumentContext,
+    ReportingItemContext,
+    SqlGenerationInput,
+    generate_reference_sql,
+)
+
+ticket_router = APIRouter(prefix="/api/tickets", tags=["tickets"])
+
+
+def _get_ticket_or_404(ticket_id: int, session: Session) -> TicketDraft:
+    ticket = session.get(TicketDraft, ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return ticket
+
+
+def _sql_safe_json(raw: str, default):
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def _build_sql_input(ticket: TicketDraft, session: Session) -> SqlGenerationInput:
+    """从工单 + 影响资产 + 字段目录 + 血缘 + 监管元数据组装 SQL 生成输入。"""
+    assets = _sql_safe_json(ticket.affected_assets, {})
+    item_codes = assets.get("reporting_item_codes", []) if isinstance(assets, dict) else []
+    source_field_codes = assets.get("source_fields", []) if isinstance(assets, dict) else []
+
+    reporting_items: list[ReportingItemContext] = []
+    item_ids: list[int] = []
+    for code in item_codes:
+        item = session.exec(
+            select(RegReportingItem).where(RegReportingItem.item_code == code)
+        ).first()
+        if item:
+            if item.id is not None:
+                item_ids.append(item.id)
+            reporting_items.append(ReportingItemContext(
+                code=code,
+                name=item.item_name or "",
+                definition=item.definition or "",
+                evidence_text=ticket.summary or "",
+            ))
+        else:
+            reporting_items.append(ReportingItemContext(code=code, evidence_text=ticket.summary or ""))
+
+    # 血缘 transform_expression：按相关报送项聚合 {data_field_code: expr}
+    transform_by_field: dict[str, str] = {}
+    if item_ids:
+        lineage_rows = session.exec(
+            select(ReportingItemLineage).where(ReportingItemLineage.reporting_item_id.in_(item_ids))
+        ).all()
+        for lin in lineage_rows:
+            field_code = ""
+            if lin.data_field_id is not None:
+                catalog = session.get(DataFieldCatalog, lin.data_field_id)
+                field_code = catalog.field_code if catalog else ""
+            if field_code and lin.transform_expression and field_code not in transform_by_field:
+                transform_by_field[field_code] = lin.transform_expression
+
+    available_fields: list[FieldContext] = []
+    for code in source_field_codes:
+        catalog = session.exec(
+            select(DataFieldCatalog).where(DataFieldCatalog.field_code == code)
+        ).first()
+        if catalog:
+            available_fields.append(FieldContext(
+                code=code,
+                table_name=catalog.table_name or "",
+                column_name=catalog.column_name or "",
+                data_type=catalog.data_type or "",
+                business_meaning=catalog.business_meaning or "",
+                transform_expression=transform_by_field.get(code, ""),
+            ))
+        else:
+            table_name, _, column_name = code.partition(".")
+            available_fields.append(FieldContext(
+                code=code,
+                table_name=table_name,
+                column_name=column_name,
+                transform_expression=transform_by_field.get(code, ""),
+            ))
+
+    task = session.get(RegTask, ticket.task_id)
+    document = session.get(RegDocument, task.document_id) if task else None
+    reg_doc = RegDocumentContext(
+        document_no=document.document_no if document else "",
+        effective_date=document.effective_date if document else "",
+        first_report_period=document.first_report_period if document else "",
+        regulatory_intent=document.regulatory_intent if document else "",
+    )
+
+    return SqlGenerationInput(
+        ticket_title=ticket.title,
+        action_type=ticket.action_ticket_type or "",
+        reporting_items=reporting_items,
+        available_fields=available_fields,
+        reg_document=reg_doc,
+        business_note=ticket.business_note or "",
+    )
+
+
+def _ticket_to_sql_response(ticket: TicketDraft) -> ReferenceSqlResponse:
+    warnings_raw = _sql_safe_json(ticket.sql_warnings, [])
+    warnings = [SqlWarningRead(**w) for w in warnings_raw if isinstance(w, dict)]
+    return ReferenceSqlResponse(
+        ticket_id=ticket.id or 0,
+        status=ticket.sql_status or "NOT_GENERATED",
+        ability=ticket.sql_ability or "",
+        reference_sql=ticket.reference_sql or "",
+        sql_dialect=ticket.sql_dialect or "ANSI",
+        confidence=ticket.sql_confidence or 0.0,
+        not_applicable_reason=ticket.sql_not_applicable_reason or "",
+        warnings=warnings,
+        generated_at=ticket.sql_generated_at,
+        generated_by=ticket.sql_generated_by or "",
+    )
+
+
+@ticket_router.get("/{ticket_id}/reference-sql", response_model=ReferenceSqlResponse)
+def get_reference_sql(ticket_id: int, session: Session = Depends(get_session)) -> ReferenceSqlResponse:
+    ticket = _get_ticket_or_404(ticket_id, session)
+    return _ticket_to_sql_response(ticket)
+
+
+@ticket_router.post("/{ticket_id}/reference-sql/generate", response_model=ReferenceSqlResponse)
+def generate_ticket_reference_sql(
+    ticket_id: int, session: Session = Depends(get_session)
+) -> ReferenceSqlResponse:
+    ticket = _get_ticket_or_404(ticket_id, session)
+    payload = _build_sql_input(ticket, session)
+    result = generate_reference_sql(payload)
+
+    ticket.sql_ability = result.ability
+    ticket.sql_status = result.status
+    ticket.sql_not_applicable_reason = result.not_applicable_reason
+    if result.status != "NOT_APPLICABLE":
+        ticket.reference_sql = result.sql
+        ticket.sql_dialect = result.dialect
+        ticket.sql_confidence = result.confidence
+        ticket.sql_warnings = json.dumps(
+            [w.to_dict() for w in result.warnings], ensure_ascii=False
+        )
+        ticket.sql_generated_at = datetime.utcnow()
+        ticket.sql_generated_by = result.generated_by
+    session.add(ticket)
+    session.commit()
+    session.refresh(ticket)
+
+    resp = _ticket_to_sql_response(ticket)
+    resp.explanation = result.explanation
+    resp.assumptions = result.assumptions
+    return resp
+
+
+@ticket_router.put("/{ticket_id}/reference-sql", response_model=ReferenceSqlResponse)
+def save_reference_sql(
+    ticket_id: int,
+    payload: ReferenceSqlSaveRequest,
+    session: Session = Depends(get_session),
+) -> ReferenceSqlResponse:
+    ticket = _get_ticket_or_404(ticket_id, session)
+    ticket.reference_sql = payload.reference_sql
+    ticket.sql_status = "EDITED_BY_USER"
+    ticket.sql_generated_by = "user"
+    ticket.sql_generated_at = datetime.utcnow()
+    session.add(ticket)
+    session.commit()
+    session.refresh(ticket)
+    return _ticket_to_sql_response(ticket)
+
+
+@ticket_router.post(
+    "/{ticket_id}/reference-sql/feedback", response_model=ReferenceSqlFeedbackResponse
+)
+def submit_reference_sql_feedback(
+    ticket_id: int,
+    payload: ReferenceSqlFeedbackRequest,
+    session: Session = Depends(get_session),
+) -> ReferenceSqlFeedbackResponse:
+    ticket = _get_ticket_or_404(ticket_id, session)
+    thumbs = payload.thumbs.lower()
+    if thumbs == "up":
+        ticket.sql_feedback_thumbs_up = (ticket.sql_feedback_thumbs_up or 0) + 1
+    elif thumbs == "down":
+        ticket.sql_feedback_thumbs_down = (ticket.sql_feedback_thumbs_down or 0) + 1
+    else:
+        raise HTTPException(status_code=400, detail="thumbs 必须是 'up' 或 'down'")
+    session.add(ticket)
+    session.commit()
+    return ReferenceSqlFeedbackResponse(ok=True)
+
+
+@ticket_router.post("/{ticket_id}/reference-sql/mark-stale", response_model=ReferenceSqlResponse)
+def mark_reference_sql_stale(
+    ticket_id: int, session: Session = Depends(get_session)
+) -> ReferenceSqlResponse:
+    ticket = _get_ticket_or_404(ticket_id, session)
+    if ticket.sql_status in {"READY", "DEGRADED", "EDITED_BY_USER"}:
+        ticket.sql_status = "STALE"
+        session.add(ticket)
+        session.commit()
+        session.refresh(ticket)
+    return _ticket_to_sql_response(ticket)

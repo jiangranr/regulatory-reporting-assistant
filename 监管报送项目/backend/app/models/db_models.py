@@ -329,6 +329,8 @@ class RegReportingImpactItem(SQLModel, table=True):
     impacted_reporting_field: str = ""
     impacted_source_fields: str = Field(default="[]", sa_column=Column(Text))
     impacted_lineage_roles: str = Field(default="[]", sa_column=Column(Text))
+    # JSON: list[{code,name,role,system_code,system_name,system_type,owner_team}]
+    impacted_source_field_details: str = Field(default="[]", sa_column=Column(Text))
     impact_reason: str = Field(default="", sa_column=Column(Text))
     recommended_action: str = Field(default="", sa_column=Column(Text))
     ticket_parent_type: str = ""
@@ -391,6 +393,18 @@ class TicketDraft(SQLModel, table=True):
     historical_cases: str = Field(default="[]", sa_column=Column(Text))
     quality_score: int = 0
     quality_flags: str = Field(default="[]", sa_column=Column(Text))
+    # 参考 SQL（Reference SQL Generator）
+    reference_sql: str = Field(default="", sa_column=Column(Text))
+    sql_dialect: str = "ANSI"
+    sql_confidence: float = 0.0
+    sql_status: str = "NOT_GENERATED"   # NOT_GENERATED / READY / DEGRADED / EDITED_BY_USER / STALE
+    sql_ability: str = ""               # CAN_GENERATE / PARTIAL / VALIDATION_ONLY / NOT_APPLICABLE
+    sql_not_applicable_reason: str = Field(default="", sa_column=Column(Text))
+    sql_warnings: str = Field(default="[]", sa_column=Column(Text))
+    sql_generated_at: datetime | None = None
+    sql_generated_by: str = ""          # "sql_v1@qwen-plus" / "user"
+    sql_feedback_thumbs_up: int = 0
+    sql_feedback_thumbs_down: int = 0
     status: str = "DRAFT"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

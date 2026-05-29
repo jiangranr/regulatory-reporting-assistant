@@ -145,7 +145,7 @@ def test_build_ticket_plan_outputs_structured_ticket_cards():
 
     assert plan.children
     assert any(
-        child.card.responsible_system.value == "DATA_GOVERNANCE_PLATFORM"
+        child.card.responsible_system == "DATA_GOVERNANCE_PLATFORM"
         for child in plan.children
         if child.card
     )

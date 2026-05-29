@@ -36,6 +36,7 @@ def init_db() -> None:
     _ensure_reg_reporting_impact_columns()
     _ensure_reporting_impact_review_columns()
     _ensure_ticket_draft_columns()
+    _ensure_ticket_draft_sql_columns()
     _ensure_reg_reporting_change_candidate_columns()
     _ensure_reg_task_execution_plan_columns()
 
@@ -197,6 +198,9 @@ def _ensure_reg_reporting_impact_columns() -> None:
         ("required_sub_ticket_types", "TEXT", "[]"),
         ("conditional_sub_ticket_types", "TEXT", "[]"),
         ("sub_ticket_triggers", "TEXT", "{}"),
+        # 字段级 lineage 明细（含 system_code/system_name/system_type/owner_team）
+        # build_baseline_from_impacts 需要它来按真实系统分桶；旧记录留空走 UNKNOWN 桶
+        ("impacted_source_field_details", "TEXT", "[]"),
     ]
     with engine.begin() as connection:
         for name, ddl, default in new_cols:
@@ -362,6 +366,40 @@ def _ensure_reg_task_execution_plan_columns() -> None:
                 if default is not None:
                     connection.execute(
                         text(f"UPDATE reg_task_execution_plan SET `{name}` = :val WHERE `{name}` IS NULL"),
+                        {"val": default},
+                    )
+
+
+def _ensure_ticket_draft_sql_columns() -> None:
+    """补 ticket_drafts 的参考 SQL 相关列（旧库兼容）。
+
+    见 docs/superpowers/plans/2026-05-29-reference-sql-generator.md §4.1。
+    """
+    inspector = inspect(engine)
+    if "ticket_drafts" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("ticket_drafts")}
+    text_column = "TEXT" if engine.dialect.name in {"mysql", "mariadb"} else "TEXT DEFAULT ''"
+    new_cols = [
+        ("reference_sql", text_column, ""),
+        ("sql_dialect", "VARCHAR(20) DEFAULT 'ANSI'", None),
+        ("sql_confidence", "FLOAT DEFAULT 0.0", None),
+        ("sql_status", "VARCHAR(20) DEFAULT 'NOT_GENERATED'", None),
+        ("sql_ability", "VARCHAR(20) DEFAULT ''", None),
+        ("sql_not_applicable_reason", text_column, ""),
+        ("sql_warnings", text_column, "[]"),
+        ("sql_generated_at", "DATETIME", None),
+        ("sql_generated_by", "VARCHAR(64) DEFAULT ''", None),
+        ("sql_feedback_thumbs_up", "INTEGER DEFAULT 0", None),
+        ("sql_feedback_thumbs_down", "INTEGER DEFAULT 0", None),
+    ]
+    with engine.begin() as connection:
+        for name, ddl, default in new_cols:
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE ticket_drafts ADD COLUMN {name} {ddl}"))
+                if default is not None:
+                    connection.execute(
+                        text(f"UPDATE ticket_drafts SET `{name}` = :val WHERE `{name}` IS NULL"),
                         {"val": default},
                     )
 
