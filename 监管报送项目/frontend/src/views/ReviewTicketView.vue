@@ -151,293 +151,153 @@
           :task-id="validParentTaskId"
           @confirmed="$emit('impact-review-confirmed')"
         />
-        <div v-if="checked.size" class="tv2-bulk">
-          <CheckSquare :size="14" />
-          已选 <b>{{ checked.size }}</b> / {{ childRows.length }}
-          <span class="spacer"></span>
-          <button class="btn ghost sm" title="重新指派接口待完善"><UserPlus :size="12" />重新指派</button>
-          <button class="btn ghost sm" title="状态更新接口待完善"><Check :size="12" />批量标记完成</button>
-          <button class="btn ghost sm" title="导出选中接口待完善"><Download :size="12" />导出选中</button>
-          <button class="btn primary sm" title="批量流转接口待完善"><Send :size="12" />批量流转</button>
-        </div>
-        <div v-else class="tv2-filterbar">
-          <button
-            v-for="item in filterItems"
-            :key="item.key"
-            :class="['tv2-filter-chip', filter === item.key ? 'active' : '', item.danger ? 'danger' : '']"
-            @click="filter = item.key"
-          >
-            {{ item.label }} <span class="ct">{{ item.count }}</span>
-          </button>
-          <span class="grow"></span>
-          <span class="pending-chip">编辑、流转、导出接口待完善</span>
-        </div>
-
-        <div class="tv2-tbl-wrap ticket-list-table">
-            <table class="tv2-tbl">
-              <thead>
-                <tr>
-                  <th class="col-check">
-                    <span :class="['ck', allChecked]" @click="toggleAll">{{ allChecked === 'on' ? "✓" : "" }}</span>
-                  </th>
-                  <th class="col-num">#</th>
-                  <th class="col-type">子单类型</th>
-                  <th class="sortable" @click="toggleSort('summary')">
-                    摘要 <span v-if="sort.key === 'summary'" class="sort-i">{{ sort.dir === 'asc' ? "▲" : "▼" }}</span>
-                  </th>
-                  <th class="col-sys">责任系统</th>
-                  <th class="col-ar">A · 出口</th>
-                  <th class="col-ar">R · 执行</th>
-                  <th class="col-codes">关联报送项</th>
-                  <th class="col-flags">标记</th>
-                  <th class="col-quality sortable" @click="toggleSort('quality')">
-                    质量 <span v-if="sort.key === 'quality'" class="sort-i">{{ sort.dir === 'asc' ? "▲" : "▼" }}</span>
-                  </th>
-                  <th class="col-actions">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-if="!childRows.length">
-                  <td colspan="10" class="empty-cell">子单拆分接口待完善：当前仅返回母单或旧版草稿。</td>
-                </tr>
-                <tr
-                  v-for="row in filteredRows"
-                  :key="row.idKey"
-                  :class="[
-                    selectedRow?.idKey === row.idKey ? 'selected' : '',
-                    checked.has(row.idKey) ? 'checked' : '',
-                    row.blockers.length ? 'blocked-row' : '',
-                  ]"
-                  @click="openId = row.idKey"
-                >
-                  <td class="col-check" @click.stop="toggleCheck(row.idKey)">
-                    <span :class="['ck', checked.has(row.idKey) ? 'on' : '']">{{ checked.has(row.idKey) ? "✓" : "" }}</span>
-                  </td>
-                  <td class="no">{{ String(row.index + 1).padStart(2, "0") }}</td>
-                  <td><TypeChip :label="row.typeLabel" :tone="row.typeTone" /></td>
-                  <td>
-                    <div class="summary-cell">
-                      <div class="s1" :title="row.summary">{{ row.summary }}</div>
-                      <span class="s2">{{ row.caption }}</span>
-                    </div>
-                  </td>
-                  <td><span class="sys-tag">{{ row.systemLabel }}</span></td>
-                  <td><RoleChip :label="row.ownerLabel" :tone="roleTone(row.ticket.owner_role)" /></td>
-                  <td><RoleChip :label="row.executorLabel" :tone="roleTone(row.ticket.executor_role)" /></td>
-                  <td>
-                    <div class="code-list">
-                      <code v-for="code in row.codes.slice(0, 2)" :key="code">{{ code }}</code>
-                      <span v-if="!row.codes.length" class="pending-chip inline">接口待完善</span>
-                      <span v-if="row.codes.length > 2" class="more">+{{ row.codes.length - 2 }}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <span class="flag-icons">
-                      <span :class="['fi', row.ticket.depends_on_lineage ? 'on' : '']" title="血缘依赖"><GitFork :size="11" /></span>
-                      <span :class="['fi', row.ticket.business_signoff_required ? 'on' : '']" title="业务签字"><Signature :size="11" /></span>
-                      <span :class="['fi danger', row.blockers.length ? 'on' : '']" title="阻塞点"><OctagonAlert :size="11" /></span>
-                    </span>
-                  </td>
-                  <td class="col-quality"><QualityBar :score="row.qualityScore" :flags="row.qualityFlags" /></td>
-                  <td class="actions" @click.stop>
-                    <button class="ib" title="查看" @click="openId = row.idKey"><Eye :size="13" /></button>
-                    <button class="ib" title="编辑接口待完善"><Pencil :size="13" /></button>
-                    <button class="ib done" title="状态接口待完善"><Check :size="13" /></button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-        </div>
-
-        <div v-if="selectedRow" class="ticket-modal-backdrop" @click.self="closeDetail">
-          <article class="ticket-detail-modal">
-            <div class="dr-head">
-              <div class="row1">
-                <TypeChip :label="selectedRow.typeLabel" :tone="selectedRow.typeTone" />
-                <span :class="['quality-pill', qualityTone(selectedRow.qualityScore)]">
-                  <span class="lbl">质量</span>{{ selectedRow.qualityScore || "待完善" }}
-                </span>
-                <span v-if="selectedRow.blockers.length" class="quality-pill red">
-                  <OctagonAlert :size="11" />阻塞
-                </span>
-                <span class="modal-spacer"></span>
-                <button class="btn secondary sm" :disabled="!previousRow" @click="openPrevious">上一条</button>
-                <button class="btn secondary sm" :disabled="!nextRow" @click="openNext">下一条</button>
-                <button class="close" @click="closeDetail"><X :size="15" /></button>
-              </div>
-              <h2>{{ selectedRow.caption }}</h2>
-              <div class="summary">{{ selectedRow.summary }}</div>
-              <div class="meta">TK-{{ selectedRow.ticket.id ?? "接口待完善" }} · 系统 {{ selectedRow.systemLabel }}</div>
+        <div class="ticket-grid">
+          <aside class="layer-panel">
+            <div class="sec-h">
+              <h2>分层工单</h2>
+              <span class="line"></span>
+              <span class="count">{{ childRows.length }} 个草稿</span>
             </div>
+            <div class="ticket-list">
+              <section v-for="group in ticketTypeGroups" :key="group.key" class="ticket-type-group">
+                <button
+                  type="button"
+                  :class="['ticket-group-head', group.hasActive ? 'active' : '']"
+                  data-test="ticket-type-group-toggle"
+                  @click="toggleTypeGroup(group.key)"
+                >
+                  <span :class="['fold-caret', isTypeGroupCollapsed(group.key) ? 'collapsed' : '']"></span>
+                  <TypeChip :label="group.label" :tone="group.tone" />
+                  <span class="group-count">{{ group.rows.length }} 个子单</span>
+                  <span v-if="group.pendingConfirm" class="group-flag">{{ group.pendingConfirm }} 待确认</span>
+                </button>
+                <div v-show="!isTypeGroupCollapsed(group.key)" class="ticket-group-body">
+                  <article
+                    v-for="row in group.rows"
+                    :key="row.idKey"
+                    :class="['ticket-item', activeRow?.idKey === row.idKey ? 'active' : '']"
+                    @click="openId = row.idKey"
+                  >
+                    <div class="row between">
+                      <span class="ticket-no">#{{ row.index + 1 }}</span>
+                      <span class="tag outline mono">{{ priorityLabel(row) }}</span>
+                    </div>
+                    <div class="title">{{ row.summary }}</div>
+                    <div class="desc">{{ row.caption }}</div>
+                    <div class="ticket-team">{{ row.systemLabel }} · {{ row.executorLabel }}</div>
+                  </article>
+                </div>
+              </section>
+              <div v-if="!childRows.length" class="empty-ticket-list">
+                子单拆分接口待完善：当前仅返回母单或旧版草稿。
+              </div>
+            </div>
+          </aside>
 
-            <div class="dr-body">
-              <DrawerSection title="责任分配">
-                <template #icon><Users :size="10" /></template>
-                <table class="detail-table ticket-detail-table">
-                  <tbody>
-                    <tr>
-                      <th>A · 出口责任</th>
-                      <td><RoleChip :label="selectedRow.ownerLabel" :tone="roleTone(selectedRow.ticket.owner_role)" /></td>
-                      <th>R · 执行人</th>
-                      <td><RoleChip :label="selectedRow.executorLabel" :tone="roleTone(selectedRow.ticket.executor_role)" /></td>
-                    </tr>
-                    <tr>
-                      <th>责任系统</th>
-                      <td colspan="3"><span class="sys-tag">{{ selectedRow.systemLabel }}</span></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </DrawerSection>
-
-              <DrawerSection title="影响范围" tone="blue">
-                <template #icon><Boxes :size="10" /></template>
-                <table v-if="selectedRow.assetEntries.length" class="detail-table asset-table">
-                  <thead>
-                    <tr>
-                      <th>资产类型</th>
-                      <th>中文名称</th>
-                      <th>技术编码</th>
-                      <th>血缘角色</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <template v-for="entry in selectedRow.assetEntries" :key="entry.key">
-                      <tr v-for="value in entry.values" :key="entry.key + value.code + value.name">
-                        <td>{{ entry.key }}</td>
-                        <td>{{ value.name || "名称待补充" }}</td>
-                        <td><code>{{ value.code }}</code></td>
-                        <td>{{ value.role || "-" }}</td>
-                      </tr>
-                      <tr v-if="entry.hiddenCount" :key="entry.key + '-more'">
-                        <td>{{ entry.key }}</td>
-                        <td colspan="3"><span class="more-chip">+{{ entry.hiddenCount }} 个更多</span></td>
-                      </tr>
-                      <tr v-if="entry.note" :key="entry.key + '-note'" class="note-row">
-                        <td>{{ entry.key }}</td>
-                        <td colspan="3"><span class="asset-note">{{ entry.note }}</span></td>
-                      </tr>
-                    </template>
-                  </tbody>
-                </table>
-                <p v-else class="pending-text">影响范围接口待完善。</p>
-              </DrawerSection>
-
-              <DrawerSection v-if="selectedRow.mustDo.length" title="必须动作" tone="green" :count="selectedRow.mustDo.length">
-                <template #icon><Check :size="10" /></template>
-                <table class="detail-table action-table">
-                  <tbody>
-                    <tr v-for="(item, i) in selectedRow.mustDo" :key="item">
-                      <th>{{ i + 1 }}</th>
-                      <td>{{ item }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </DrawerSection>
-              <DrawerSection v-else title="必须动作" tone="green">
-                <template #icon><Check :size="10" /></template>
-                <p class="pending-text">must_do 接口待完善。</p>
-              </DrawerSection>
-
-              <DrawerSection v-if="selectedRow.mustConfirm.length" title="待确认问题" tone="violet" :count="selectedRow.mustConfirm.length">
-                <template #icon><CircleHelp :size="10" /></template>
-                <table class="detail-table action-table">
-                  <tbody>
-                    <tr v-for="item in selectedRow.mustConfirm" :key="item">
-                      <th>待确认</th>
-                      <td>{{ item }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </DrawerSection>
-
-              <div v-if="selectedRow.blockers.length" class="dr-section">
-                <div class="dr-blockers">
-                  <div class="head"><OctagonAlert :size="11" />阻塞点 · {{ selectedRow.blockers.length }} 项</div>
-                  <ul><li v-for="item in selectedRow.blockers" :key="item">{{ item }}</li></ul>
+          <article v-if="activeRow" class="ticket-doc">
+            <div class="doc-head">
+              <div>
+                <div class="row tags-row">
+                  <TypeChip :label="activeRow.typeLabel" :tone="activeRow.typeTone" />
+                  <span class="tag outline mono">{{ priorityLabel(activeRow) }}</span>
+                  <span :class="['quality-pill', qualityTone(activeRow.qualityScore)]">
+                    质量 {{ activeRow.qualityScore || "待完善" }}
+                  </span>
+                </div>
+                <h2>{{ activeRow.summary }}</h2>
+                <div class="doc-meta">
+                  TK-{{ activeRow.ticket.id ?? "接口待完善" }} · 关联 {{ documentRef }} · 责任 {{ activeRow.systemLabel }}
                 </div>
               </div>
-
-              <DrawerSection title="产出资产" tone="orange">
-                <template #icon><Package :size="10" /></template>
-                <table v-if="selectedRow.outputs.length" class="detail-table action-table">
-                  <tbody>
-                    <tr v-for="item in selectedRow.outputs" :key="item">
-                      <th>产出</th>
-                      <td>{{ item }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <p v-else class="pending-text">output_artifacts 接口待完善。</p>
-              </DrawerSection>
-
-              <DrawerSection title="验收标准" tone="amber">
-                <template #icon><Target :size="10" /></template>
-                <table v-if="selectedRow.acceptance.length" class="detail-table action-table">
-                  <tbody>
-                    <tr v-for="item in selectedRow.acceptance" :key="item">
-                      <th>验收</th>
-                      <td>{{ item }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <p v-else class="pending-text">acceptance_criteria_structured 接口待完善。</p>
-              </DrawerSection>
-
-              <DrawerSection title="证据链" :count="selectedRow.evidence.length">
-                <template #icon><Quote :size="10" /></template>
-                <table v-if="selectedRow.evidence.length" class="detail-table evidence-table">
-                  <thead>
-                    <tr>
-                      <th>来源</th>
-                      <th>证据文本</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="item in selectedRow.evidence" :key="item.src + item.text">
-                      <td>{{ item.src || "来源待补充" }}</td>
-                      <td>{{ item.text || "证据文本待补充" }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                <p v-else class="pending-text">evidence_refs 接口待完善。</p>
-              </DrawerSection>
-
-              <DrawerSection title="历史相似决策" :count="selectedRow.history.length">
-                <template #icon><History :size="10" /></template>
-                <table v-if="selectedRow.history.length" class="detail-table history-table">
-                  <thead>
-                    <tr>
-                      <th>历史工单</th>
-                      <th>匹配项</th>
-                      <th>复用依据</th>
-                      <th>分值</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="item in selectedRow.history" :key="item.id + item.title">
-                      <td>
-                        <div class="history-title">{{ item.title || "标题待补充" }}</div>
-                        <div class="history-meta">{{ item.id || "ID 待补充" }} · {{ item.date || "日期待补充" }}</div>
-                      </td>
-                      <td><code v-for="code in item.matchedCodes" :key="code">{{ code }}</code><span v-if="!item.matchedCodes.length">-</span></td>
-                      <td>{{ item.rationale || "-" }}</td>
-                      <td><span class="match">{{ item.match || "?" }}%</span></td>
-                    </tr>
-                  </tbody>
-                </table>
-                <p v-else class="pending-text">historical_cases 接口待完善。</p>
-              </DrawerSection>
-
-              <DrawerSection title="后端正文回退">
-                <template #icon><FileText :size="10" /></template>
-                <pre class="ticket-content">{{ selectedRow.ticket.content || "content 接口待完善" }}</pre>
-              </DrawerSection>
+              <div class="row doc-actions">
+                <button class="btn ghost sm" title="复制接口待完善"><FileText :size="12" /></button>
+                <button class="btn secondary sm" title="编辑接口待完善"><Pencil :size="12" />编辑</button>
+              </div>
             </div>
 
-            <div class="dr-foot">
-              <button class="btn secondary"><Check :size="12" />标记完成</button>
-              <button class="btn secondary"><Pencil :size="12" />编辑</button>
-              <button class="btn primary"><Download :size="12" />导出</button>
+            <div class="doc-body">
+              <section class="doc-section">
+                <h4>背景与变更来源</h4>
+                <div class="reg-summary">
+                  <div class="reg-summary-label">监管原文摘要</div>
+                  <ul v-if="regulatorySummaryItems.length" class="doc-list reg-summary-list">
+                    <li v-for="item in regulatorySummaryItems" :key="item">{{ item }}</li>
+                  </ul>
+                  <p v-else class="pending-text">监管原文摘要接口待完善。</p>
+                </div>
+              </section>
+
+              <section class="doc-section">
+                <h4>影响范围</h4>
+                <div v-if="activeRow.assetEntries.length" class="asset-chip-group">
+                  <template v-for="entry in activeRow.assetEntries" :key="entry.key">
+                    <span
+                      v-for="value in entry.values"
+                      :key="entry.key + value.code + value.name"
+                      class="tag outline mono"
+                      :title="`${entry.key}${value.role ? ' · ' + value.role : ''}`"
+                    >
+                      {{ value.code || value.name }}
+                    </span>
+                    <span v-if="entry.hiddenCount" :key="entry.key + '-more'" class="tag outline mono">
+                      +{{ entry.hiddenCount }} {{ entry.key }}
+                    </span>
+                  </template>
+                </div>
+                <p v-else class="pending-text">影响范围接口待完善。</p>
+              </section>
+
+              <section v-if="activeRow.ticket.business_note" class="doc-section">
+                <h4>业务备注</h4>
+                <p>{{ activeRow.ticket.business_note }}</p>
+              </section>
+
+              <section class="doc-section">
+                <h4>建议处理动作</h4>
+                <ol v-if="activeRow.mustDo.length" class="doc-list">
+                  <li v-for="item in activeRow.mustDo" :key="item">{{ item }}</li>
+                </ol>
+                <p v-else class="pending-text">must_do 接口待完善。</p>
+              </section>
+
+              <section v-if="activeRow.mustConfirm.length" class="doc-section">
+                <h4>待确认问题</h4>
+                <ol class="doc-list">
+                  <li v-for="item in activeRow.mustConfirm" :key="item">{{ item }}</li>
+                </ol>
+              </section>
+
+              <section class="doc-section">
+                <h4>验收标准</h4>
+                <ol v-if="activeRow.acceptance.length" class="doc-list">
+                  <li v-for="item in activeRow.acceptance" :key="item">{{ item }}</li>
+                </ol>
+                <p v-else class="pending-text">acceptance_criteria_structured 接口待完善。</p>
+              </section>
+
+              <section class="doc-section">
+                <h4>关联与依赖</h4>
+                <table class="detail-table dependency-table">
+                  <thead>
+                    <tr><th>类型</th><th>关联对象</th><th>关系</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in relatedRows(activeRow)" :key="row.idKey">
+                      <td>{{ row.typeLabel }}</td>
+                      <td>TK-{{ row.ticket.id ?? row.index + 1 }} · {{ row.summary }}</td>
+                      <td>{{ row.ticket.depends_on_lineage ? "前置" : "并行" }}</td>
+                    </tr>
+                    <tr v-if="!relatedRows(activeRow).length">
+                      <td colspan="3">暂无其他子单依赖。</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+
+              <section class="doc-section">
+                <h4>后端正文回退</h4>
+                <pre class="ticket-content">{{ cleanedTicketContent(activeRow.ticket.content) || "content 接口待完善" }}</pre>
+              </section>
             </div>
           </article>
         </div>
@@ -448,31 +308,16 @@
 
 <script setup lang="ts">
 import { computed, defineComponent, h, ref, watch } from "vue";
-import type { PropType } from "vue";
 import {
   ArrowLeft,
-  Boxes,
-  Check,
-  CheckSquare,
-  CircleHelp,
   ClipboardList,
   Download,
-  Eye,
   FileText,
-  GitFork,
-  History,
-  OctagonAlert,
-  Package,
   Pencil,
-  Quote,
   RefreshCcw,
   Send,
-  Signature,
   Sparkles,
   Target,
-  UserPlus,
-  Users,
-  X,
 } from "lucide-vue-next";
 import ExecutionPlanCard from "@/components/ExecutionPlanCard.vue";
 import ImpactScopeReview from "@/components/ImpactScopeReview.vue";
@@ -484,9 +329,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ back: []; finish: []; generate: []; "impact-review-confirmed": [] }>();
-
-type FilterKey = "all" | "blocked" | "signoff" | "lowQuality" | "pendingConfirm";
-type SortKey = "quality" | "summary";
 
 interface EvidenceRef {
   src: string;
@@ -539,11 +381,18 @@ interface TicketRow {
   qualityFlags: string[];
 }
 
+interface TicketTypeGroup {
+  key: string;
+  label: string;
+  tone: string;
+  rows: TicketRow[];
+  hasActive: boolean;
+  pendingConfirm: number;
+}
+
 const activeTab = ref<"plan" | "audit">("plan");
 const openId = ref<string | null>(null);
-const checked = ref<Set<string>>(new Set());
-const filter = ref<FilterKey>("all");
-const sort = ref<{ key: SortKey; dir: "asc" | "desc" }>({ key: "quality", dir: "asc" });
+const collapsedTypeGroups = ref<Set<string>>(new Set());
 
 const tickets = computed(() => props.workflow?.ticket_drafts ?? []);
 const parentTickets = computed(() => tickets.value.filter((ticket) => ticket.ticket_role === "PARENT"));
@@ -554,36 +403,24 @@ const childRows = computed<TicketRow[]>(() =>
   childTickets.value.map((ticket, index) => normalizeTicket(ticket, index)),
 );
 
-const filteredRows = computed(() => {
-  let rows = [...childRows.value];
-  if (filter.value === "blocked") rows = rows.filter((row) => row.blockers.length > 0);
-  if (filter.value === "signoff") rows = rows.filter((row) => row.ticket.business_signoff_required);
-  if (filter.value === "lowQuality") rows = rows.filter((row) => row.qualityScore > 0 && row.qualityScore < 80);
-  if (filter.value === "pendingConfirm") rows = rows.filter((row) => row.mustConfirm.length > 0);
-
-  const dir = sort.value.dir === "asc" ? 1 : -1;
-  rows.sort((a, b) => {
-    if (sort.value.key === "summary") return a.summary.localeCompare(b.summary, "zh-Hans-CN") * dir;
-    const aq = a.qualityScore || 999;
-    const bq = b.qualityScore || 999;
-    return (aq - bq) * dir;
-  });
-  return rows;
-});
-
 const selectedRow = computed(() => childRows.value.find((row) => row.idKey === openId.value) ?? null);
+const activeRow = computed(() => selectedRow.value ?? childRows.value[0] ?? null);
 const blockedRows = computed(() => childRows.value.filter((row) => row.blockers.length > 0));
-const selectedRowIndex = computed(() =>
-  selectedRow.value ? childRows.value.findIndex((row) => row.idKey === selectedRow.value?.idKey) : -1,
-);
-const previousRow = computed(() =>
-  selectedRowIndex.value > 0 ? childRows.value[selectedRowIndex.value - 1] : null,
-);
-const nextRow = computed(() =>
-  selectedRowIndex.value >= 0 && selectedRowIndex.value < childRows.value.length - 1
-    ? childRows.value[selectedRowIndex.value + 1]
-    : null,
-);
+const ticketTypeGroups = computed<TicketTypeGroup[]>(() => {
+  const groups = new Map<string, TicketRow[]>();
+  for (const row of childRows.value) {
+    const key = row.typeLabel || "未分类";
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  return Array.from(groups.entries()).map(([key, rows]) => ({
+    key,
+    label: key,
+    tone: rows[0]?.typeTone ?? "slate",
+    rows,
+    hasActive: rows.some((row) => row.idKey === activeRow.value?.idKey),
+    pendingConfirm: rows.filter((row) => row.mustConfirm.length > 0 || row.ticket.business_signoff_required).length,
+  }));
+});
 
 const stats = computed(() => {
   const scored = childRows.value.filter((row) => row.qualityScore > 0);
@@ -595,19 +432,6 @@ const stats = computed(() => {
     blocked: blockedRows.value.length,
     avgQuality,
   };
-});
-
-const filterItems = computed<Array<{ key: FilterKey; label: string; count: number; danger?: boolean }>>(() => [
-  { key: "all", label: "全部", count: childRows.value.length },
-  { key: "blocked", label: "仅阻塞", count: blockedRows.value.length, danger: true },
-  { key: "signoff", label: "待业务签字", count: childRows.value.filter((row) => row.ticket.business_signoff_required).length },
-  { key: "lowQuality", label: "质量 < 80", count: childRows.value.filter((row) => row.qualityScore > 0 && row.qualityScore < 80).length },
-  { key: "pendingConfirm", label: "有待确认", count: childRows.value.filter((row) => row.mustConfirm.length > 0).length },
-]);
-
-const allChecked = computed(() => {
-  if (!childRows.value.length || !checked.value.size) return "";
-  return checked.value.size === childRows.value.length ? "on" : "partial";
 });
 
 const parentTitle = computed(() => parentTicket.value?.title || `${props.workflow?.document?.title || "母单标题"}接口待完善`);
@@ -623,6 +447,7 @@ const documentRef = computed(() => {
 });
 const parentChangeType = computed(() => parentTicket.value?.change_ticket_type ?? "");
 const severitySignals = computed(() => textArray(parentTicket.value?.severity_signals));
+const regulatorySummaryItems = computed(() => buildRegulatorySummaryItems(props.workflow, parentTicket.value, activeRow.value?.ticket ?? null));
 const parentSeverity = computed(() => {
   const level = parentTicket.value?.severity_level || "L?";
   const score = parentTicket.value?.severity_score ?? 0;
@@ -639,36 +464,25 @@ function onRegenerate(): void {
   if (ok) emit("generate");
 }
 
-function toggleCheck(id: string): void {
-  const next = new Set(checked.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  checked.value = next;
+function priorityLabel(row: TicketRow): string {
+  if (row.blockers.length) return "P0";
+  if (row.ticket.business_signoff_required || row.mustConfirm.length) return "P1";
+  return row.qualityScore > 0 && row.qualityScore < 80 ? "P1" : "P2";
 }
 
-function toggleAll(): void {
-  checked.value = checked.value.size === childRows.value.length
-    ? new Set()
-    : new Set(childRows.value.map((row) => row.idKey));
+function relatedRows(row: TicketRow): TicketRow[] {
+  return childRows.value.filter((item) => item.idKey !== row.idKey).slice(0, 5);
 }
 
-function toggleSort(key: SortKey): void {
-  sort.value = {
-    key,
-    dir: sort.value.key === key && sort.value.dir === "asc" ? "desc" : "asc",
-  };
+function isTypeGroupCollapsed(key: string): boolean {
+  return collapsedTypeGroups.value.has(key);
 }
 
-function closeDetail(): void {
-  openId.value = null;
-}
-
-function openPrevious(): void {
-  if (previousRow.value) openId.value = previousRow.value.idKey;
-}
-
-function openNext(): void {
-  if (nextRow.value) openId.value = nextRow.value.idKey;
+function toggleTypeGroup(key: string): void {
+  const next = new Set(collapsedTypeGroups.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  collapsedTypeGroups.value = next;
 }
 
 function normalizeTicket(ticket: TicketDraft, index: number): TicketRow {
@@ -705,6 +519,94 @@ function firstContentLine(value: string): string {
     .split(/\n+/)
     .map((line) => line.replace(/^#+\s*/, "").trim())
     .find(Boolean) ?? "";
+}
+
+function buildRegulatorySummaryItems(workflow: TaskWorkflow | null, parent: TicketDraft | null, active: TicketDraft | null): string[] {
+  const items: string[] = [];
+  for (const signal of workflow?.document_profile?.change_signals ?? []) {
+    const evidence = cleanRegulatoryEvidence(signal.evidence_text);
+    if (!evidence) continue;
+    const label = [signal.table_code, signal.indicator_hint].map((item) => item.trim()).filter(Boolean).join(" · ");
+    items.push(label ? `${label}：${evidence}` : evidence);
+  }
+
+  if (!items.length) {
+    for (const candidate of workflow?.reporting_candidates ?? []) {
+      const evidence = cleanRegulatoryEvidence(candidate.evidence_text);
+      if (!evidence) continue;
+      const label = [candidate.reporting_object_code, candidate.reporting_item_code].map((item) => item.trim()).filter(Boolean).join(" · ");
+      items.push(label ? `${label}：${evidence}` : evidence);
+    }
+  }
+
+  if (!items.length) {
+    items.push(...splitSummaryText(workflow?.document_profile?.evidence_text ?? ""));
+  }
+  if (!items.length) {
+    items.push(...splitSummaryText(workflow?.document_profile?.reason ?? ""));
+  }
+  if (!items.length) {
+    items.push(...splitSummaryText(parent?.summary || parent?.content || active?.content || ""));
+  }
+
+  return uniqueSummaryItems(items).slice(0, 6);
+}
+
+function splitSummaryText(value: string): string[] {
+  const cleaned = cleanedTicketContent(value);
+  if (!cleaned) return [];
+  return cleaned
+    .split(/\n+|；+/)
+    .map((item) => cleanRegulatoryEvidence(item))
+    .filter(Boolean);
+}
+
+function uniqueSummaryItems(items: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const item of items) {
+    const cleaned = shortenSummary(cleanRegulatoryEvidence(item));
+    const key = cleaned.replace(/\s+/g, "");
+    if (!cleaned || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(cleaned);
+  }
+  return unique;
+}
+
+function cleanedTicketContent(value: string): string {
+  return value
+    .split(/\n+/)
+    .map((line) => cleanRegulatoryEvidence(line))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function cleanRegulatoryEvidence(value: string): string {
+  const leadingMarker = value.match(/^\s*[-*]?\s*\[\s*(新增|删除|修改|调整)\s*\|[^\]]+\]\s*/);
+  const markerPrefix = leadingMarker ? `${leadingMarker[1]}：` : "";
+  const withoutLeading = leadingMarker ? value.slice(leadingMarker[0].length) : value;
+  return `${markerPrefix}${withoutLeading}`
+    .replace(/^\s{0,3}#{1,6}\s*/g, "")
+    .replace(/^\s*[-*]\s+/g, "")
+    .replace(/\s*\[\s*(?:新增|删除|修改|调整)\s*\|[^\]]+\]\s*/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/：；/g, "：")
+    .replace(/；{2,}/g, "；")
+    .trim();
+}
+
+function shortenSummary(value: string, maxLength = 180): string {
+  if (value.length <= maxLength) return value;
+  const head = value.slice(0, maxLength);
+  const punctuationIndex = Math.max(
+    head.lastIndexOf("。"),
+    head.lastIndexOf("；"),
+    head.lastIndexOf("，"),
+    head.lastIndexOf(","),
+  );
+  const end = punctuationIndex >= 80 ? punctuationIndex + 1 : maxLength;
+  return `${head.slice(0, end).trim()}...`;
 }
 
 function parseJson(value: string | null | undefined): unknown {
@@ -962,19 +864,6 @@ function actionTone(value: string): string {
   } as Record<string, string>)[value] || "slate";
 }
 
-function roleTone(value: string): string {
-  return ({
-    BUSINESS: "violet",
-    REPORTING_MGMT: "orange",
-    DATA_GOVERNANCE: "blue",
-    SOURCE_SYSTEM: "red",
-    DATA_DEV: "green",
-    DATA_QUALITY: "amber",
-    QA: "slate",
-    COMPLIANCE: "slate",
-  } as Record<string, string>)[value] || "slate";
-}
-
 function qualityTone(score: number): string {
   if (!score) return "pending";
   if (score >= 90) return "";
@@ -987,7 +876,6 @@ watch(
   (rows) => {
     const exists = rows.some((row) => row.idKey === openId.value);
     if (!exists) openId.value = null;
-    checked.value = new Set([...checked.value].filter((id) => rows.some((row) => row.idKey === id)));
   },
   { immediate: true },
 );
@@ -1006,53 +894,6 @@ const TypeChip = defineComponent({
   },
 });
 
-const RoleChip = defineComponent({
-  props: {
-    label: { type: String, required: true },
-    tone: { type: String, default: "slate" },
-  },
-  setup(props) {
-    return () => h("span", { class: ["role-chip", props.tone] }, [
-      h("span", { class: "swatch" }),
-      props.label,
-    ]);
-  },
-});
-
-const QualityBar = defineComponent({
-  props: {
-    score: { type: Number, required: true },
-    flags: { type: Array as PropType<string[]>, default: () => [] },
-  },
-  setup(props) {
-    return () => {
-      const tone = qualityTone(props.score);
-      return h("span", { class: ["qbar", tone] }, [
-        h("span", { class: "v" }, props.score ? String(props.score) : "待完善"),
-        h("span", { class: "b" }, [h("span", { style: { width: `${props.score || 0}%` } })]),
-        props.flags.length ? h("span", { class: ["flag-ct", props.score >= 70 ? "amber" : ""] }, `!${props.flags.length}`) : null,
-      ]);
-    };
-  },
-});
-
-const DrawerSection = defineComponent({
-  props: {
-    title: { type: String, required: true },
-    tone: { type: String, default: "" },
-    count: { type: Number, default: null },
-  },
-  setup(props, { slots }) {
-    return () => h("div", { class: "dr-section" }, [
-      h("h4", [
-        h("span", { class: ["ico-h", props.tone] }, slots.icon?.()),
-        props.title,
-        props.count !== null ? h("span", { class: "ct" }, `${props.count} 条`) : null,
-      ]),
-      slots.default?.(),
-    ]);
-  },
-});
 </script>
 
 <style scoped>
@@ -1206,6 +1047,249 @@ const DrawerSection = defineComponent({
 .ai-plan-foot { display: flex; gap: 8px; align-items: center; color: var(--ink-500); font-size: 12px; border-top: 1px dashed var(--border); padding-top: 12px; }
 
 .audit-panel { display: flex; flex-direction: column; gap: 12px; }
+.ticket-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.layer-panel { min-width: 0; }
+.sec-h {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.sec-h h2 {
+  margin: 0;
+  color: var(--ink-900);
+  font-size: 15px;
+  font-weight: 700;
+}
+.sec-h .line {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.sec-h .count {
+  color: var(--ink-500);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.ticket-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ticket-type-group {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: var(--sh-1);
+}
+.ticket-group-head {
+  width: 100%;
+  min-height: 42px;
+  border: 0;
+  background: linear-gradient(180deg, #fff, var(--surface-alt));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  text-align: left;
+  color: var(--ink-800);
+}
+.ticket-group-head:hover {
+  background: var(--surface-alt);
+}
+.ticket-group-head.active {
+  box-shadow: inset 3px 0 0 var(--orange-500);
+}
+.fold-caret {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--ink-500);
+  transition: transform .14s ease;
+  flex-shrink: 0;
+}
+.fold-caret.collapsed {
+  transform: rotate(-90deg);
+}
+.group-count {
+  margin-left: auto;
+  color: var(--ink-500);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.group-flag {
+  background: var(--red-bg);
+  border: 1px solid rgba(180,50,51,0.18);
+  border-radius: 999px;
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.ticket-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  background: rgba(251,248,243,0.62);
+}
+.ticket-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color .12s, background .12s, box-shadow .12s;
+}
+.ticket-item:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--sh-1);
+}
+.ticket-item.active {
+  border-color: rgba(234,84,4,0.45);
+  background: #FFFAF4;
+  box-shadow: inset 3px 0 0 var(--orange-500), var(--sh-1);
+}
+.ticket-no {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-400);
+  font-weight: 700;
+}
+.ticket-item .title {
+  margin-top: 8px;
+  color: var(--ink-900);
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.ticket-item .desc {
+  margin-top: 5px;
+  color: var(--ink-500);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.ticket-team {
+  margin-top: 9px;
+  color: var(--ink-600);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.empty-ticket-list {
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: var(--ink-500);
+  font-size: 12.5px;
+  line-height: 1.7;
+  padding: 16px;
+}
+.ticket-doc {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: var(--sh-1);
+}
+.doc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 20px 16px;
+  background: linear-gradient(180deg, #FFFCF8, var(--surface));
+  border-bottom: 1px solid var(--border);
+}
+.tags-row {
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.doc-head h2 {
+  margin: 10px 0 6px;
+  color: var(--ink-900);
+  font-size: 18px;
+  line-height: 1.45;
+  font-weight: 700;
+}
+.doc-meta {
+  color: var(--ink-500);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.doc-actions {
+  gap: 6px;
+  flex-shrink: 0;
+}
+.doc-body {
+  display: flex;
+  flex-direction: column;
+}
+.doc-section {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.doc-section:last-child { border-bottom: none; }
+.doc-section h4 {
+  margin: 0 0 9px;
+  color: var(--ink-700);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.doc-section p {
+  margin: 0;
+  color: var(--ink-700);
+  font-size: 13px;
+  line-height: 1.75;
+}
+.reg-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.reg-summary-label {
+  color: var(--ink-500);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.reg-summary-list {
+  padding-left: 20px;
+}
+.reg-summary-list li {
+  padding-left: 2px;
+}
+.asset-chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.doc-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-800);
+  font-size: 13px;
+  line-height: 1.75;
+}
+.doc-list li + li { margin-top: 4px; }
+.dependency-table th:nth-child(1),
+.dependency-table td:nth-child(1) { width: 110px; }
+.dependency-table th:nth-child(3),
+.dependency-table td:nth-child(3) { width: 86px; }
 .tv2-filterbar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 2px;
 }
@@ -1573,6 +1657,9 @@ const DrawerSection = defineComponent({
 }
 @media (max-width: 860px) {
   .tv2-hero .hero-row1, .tv2-page-head { flex-direction: column; align-items: stretch; }
+  .ticket-grid { grid-template-columns: 1fr; }
+  .doc-head { flex-direction: column; }
+  .doc-actions { width: 100%; justify-content: flex-end; }
   .plan-grid { grid-template-columns: 1fr; }
   .ai-plan-summary { grid-template-columns: 1fr; }
   .tv2-tbl-wrap { overflow-x: auto; }

@@ -111,11 +111,22 @@ function workflowWithTicket(ticket: Partial<TicketDraft>): TaskWorkflow {
   };
 }
 
+function childTicket(id: number, ticket: Partial<TicketDraft>): TicketDraft {
+  return {
+    ...baseTicket,
+    ...ticket,
+    id,
+    parent_ticket_id: 1,
+    ticket_role: "CHILD",
+    action_ticket_type: ticket.action_ticket_type ?? "DATA_MAPPING",
+  };
+}
+
 async function openFirstChildDetail(wrapper: ReturnType<typeof mount>): Promise<void> {
   const auditTab = wrapper.findAll("button").find((button) => button.text().includes("工单审核"));
   if (!auditTab) throw new Error("工单审核 tab not found");
   await auditTab.trigger("click");
-  await wrapper.get("tbody tr").trigger("click");
+  await wrapper.get(".ticket-item").trigger("click");
 }
 
 const globalStubs = {
@@ -144,16 +155,61 @@ describe("ReviewTicketView", () => {
 
     expect(wrapper.find("[data-test='execution-plan-card-stub']").exists()).toBe(false);
     expect(wrapper.find("[data-test='impact-scope-review-stub']").exists()).toBe(true);
+    expect(wrapper.find(".ticket-grid").exists()).toBe(true);
+    expect(wrapper.find(".ticket-doc").exists()).toBe(true);
+    expect(wrapper.find(".ticket-list-table").exists()).toBe(false);
   });
 
-  it("renders structured ticket fields and hides the fixed SQL draft block", async () => {
+  it("groups the left ticket list by action type and supports folding a type group", async () => {
+    const workflow = workflowWithTicket({
+      action_ticket_type: "SOURCE_SYSTEM_CHANGE",
+      summary: "交易对手与授信系统需处理 1 个报送项、2 个字段。",
+    });
+    workflow.ticket_drafts.push(
+      childTicket(3, {
+        action_ticket_type: "SOURCE_SYSTEM_CHANGE",
+        summary: "投资交易 ODS 需处理 2 个报送项、5 个字段。",
+      }),
+      childTicket(4, {
+        action_ticket_type: "SOURCE_SYSTEM_CHANGE",
+        summary: "核心源系统需补充采集字段。",
+      }),
+      childTicket(5, {
+        action_ticket_type: "REPORT_PROCESSING",
+        summary: "报送加工链路需调整调度。",
+      }),
+    );
+    const wrapper = mount(ReviewTicketView, {
+      props: { busy: false, workflow },
+      global: { stubs: globalStubs },
+    });
+
+    const auditTab = wrapper.findAll("button").find((button) => button.text().includes("工单审核"));
+    if (!auditTab) throw new Error("工单审核 tab not found");
+    await auditTab.trigger("click");
+
+    const groups = wrapper.findAll(".ticket-type-group");
+    expect(groups).toHaveLength(2);
+    expect(groups[0].text()).toContain("源系统改造");
+    expect(groups[0].text()).toContain("3 个子单");
+    expect(groups[1].text()).toContain("报送加工");
+    expect(groups[1].text()).toContain("1 个子单");
+
+    await groups[0].get("[data-test='ticket-type-group-toggle']").trigger("click");
+    expect(groups[0].get(".ticket-group-body").attributes("style")).toContain("display: none");
+  });
+
+  it("renders structured ticket fields in the document-style ticket view and hides the fixed SQL draft block", async () => {
     const wrapper = mount(ReviewTicketView, {
       props: {
         busy: false,
         workflow: workflowWithTicket({
           summary: "确认 G31 优先股口径调整影响范围",
           responsible_system: "REG_REPORTING_SYSTEM",
-          affected_assets: JSON.stringify(["G31.PART_I", "rpt_g31_position"]),
+          affected_assets: JSON.stringify({
+            REPORTING_ITEM_CODES: ["G31.PART_I"],
+            SOURCE_FIELDS: ["rpt_g31_position"],
+          }),
           must_do: JSON.stringify(["更新报送字段映射", "补充口径校验规则"]),
           quality_score: 92,
         }),
@@ -163,15 +219,62 @@ describe("ReviewTicketView", () => {
 
     await openFirstChildDetail(wrapper);
 
+    expect(wrapper.find(".ticket-doc").exists()).toBe(true);
     expect(wrapper.text()).toContain("监管报送系统");
     expect(wrapper.text()).toContain("确认 G31 优先股口径调整影响范围");
+    expect(wrapper.text()).toContain("G31.PART_I");
+    expect(wrapper.text()).toContain("rpt_g31_position");
     expect(wrapper.text()).toContain("更新报送字段映射");
-    expect(wrapper.text()).toContain("质量评分");
+    expect(wrapper.text()).toContain("质量 92");
     expect(wrapper.text()).toContain("92");
     expect(wrapper.text()).not.toContain("可审查 SQL · 参考草稿");
   });
 
-  it("falls back to content markdown for old tickets without structured fields", async () => {
+  it("renders regulatory evidence as bullet summaries in the background section", async () => {
+    const workflow = workflowWithTicket({
+      summary: "交易对手与授信系统需处理 1 个报送项、2 个字段。",
+      content: "## 责任分配\n\n- 出口责任 (A)：REPORTING_MGMT\n\n## 影响范围\n\n- 不应出现在背景区",
+    });
+    workflow.document_profile!.change_signals = [
+      {
+        table_code: "G31",
+        section_hint: "PART_I",
+        indicator_hint: "因持有非底层资产而间接持有_期末余额",
+        change_type: "ADD",
+        evidence_text: "- [新增 | 陈施霖 | 2024-12-20] G31.PART_I.1_0.D 因持有非底层资产而间接持有：期末余额",
+        confidence: 0.92,
+        evidence_verified: true,
+      },
+      {
+        table_code: "G31",
+        section_hint: "PART_I",
+        indicator_hint: "修正久期",
+        change_type: "MODIFY",
+        evidence_text: "C列修正久期发生 INDICATOR_ADD，需要复核报送字段、源字段和加工逻辑。",
+        confidence: 0.88,
+        evidence_verified: true,
+      },
+    ];
+    const wrapper = mount(ReviewTicketView, {
+      props: { busy: false, workflow },
+      global: { stubs: globalStubs },
+    });
+
+    await openFirstChildDetail(wrapper);
+
+    const backgroundSection = wrapper.findAll(".doc-section").find((section) => section.text().includes("背景与变更来源"));
+    if (!backgroundSection) throw new Error("background section not found");
+
+    const bullets = backgroundSection.findAll("li");
+    expect(bullets).toHaveLength(2);
+    expect(backgroundSection.text()).toContain("监管原文摘要");
+    expect(backgroundSection.text()).toContain("新增：G31.PART_I.1_0.D 因持有非底层资产而间接持有：期末余额");
+    expect(backgroundSection.text()).toContain("C列修正久期发生 INDICATOR_ADD");
+    expect(backgroundSection.text()).not.toContain("## 责任分配");
+    expect(backgroundSection.text()).not.toContain("不应出现在背景区");
+  });
+
+  it("falls back to cleaned content for old tickets without structured evidence", async () => {
     const wrapper = mount(ReviewTicketView, {
       props: {
         busy: false,
@@ -187,7 +290,8 @@ describe("ReviewTicketView", () => {
 
     await openFirstChildDetail(wrapper);
 
-    expect(wrapper.text()).toContain("## 老工单正文");
+    expect(wrapper.text()).toContain("老工单正文");
     expect(wrapper.text()).toContain("请按原 Markdown 方式展示。");
+    expect(wrapper.text()).not.toContain("## 老工单正文");
   });
 });
