@@ -340,6 +340,20 @@ class RegReportingImpactItem(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class ReportingImpactReview(SQLModel, table=True):
+    __tablename__ = "reporting_impact_review"
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: int = Field(index=True, unique=True)
+    status: str = Field(default="EDITING", max_length=20)
+    review_content: str = Field(default="{}", sa_column=Column(Text))
+    ai_baseline_content: str = Field(default="{}", sa_column=Column(Text))
+    confirmed_at: datetime | None = None
+    confirmed_by: str = Field(default="", max_length=64)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class TicketDraft(SQLModel, table=True):
     __tablename__ = "ticket_drafts"
 
@@ -367,6 +381,7 @@ class TicketDraft(SQLModel, table=True):
     responsible_system: str = Field(default="", max_length=80)
     affected_systems: str = Field(default="[]", sa_column=Column(Text))
     affected_assets: str = Field(default="{}", sa_column=Column(Text))
+    business_note: str = Field(default="", sa_column=Column(Text))
     must_do: str = Field(default="[]", sa_column=Column(Text))
     must_confirm: str = Field(default="[]", sa_column=Column(Text))
     output_artifacts: str = Field(default="[]", sa_column=Column(Text))

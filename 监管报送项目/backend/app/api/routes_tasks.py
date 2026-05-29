@@ -19,18 +19,22 @@ from app.models.db_models import (
     RegReportingRuleCardConceptMap,
     RegConcept,
     RegTaskExecutionPlan,
+    ReportingImpactReview,
     ReportingItemLineage,
     RegSemanticItem,
     RegTask,
     TicketDraft,
 )
-from app.models.enums import RiskLevel, TaskStatus
+from app.models.enums import ActionTicketType, ResponsibleSystem, RiskLevel, TaskStatus
 from app.models.schemas import (
     DocumentTaskProfileRead,
     ExecutionPlanFeedbackRequest,
     ExecutionPlanFeedbackResponse,
     ExecutionPlanRead,
     ExecutionPlanResponse,
+    ImpactReviewResponse,
+    ImpactReviewSaveRequest,
+    ImpactReviewSaveResponse,
     ImpactAnalysisResponse,
     RegClauseRead,
     RegDocumentRead,
@@ -58,6 +62,17 @@ from app.services.reporting_ticket_generator import (
     build_ticket_plan,
     generate_reporting_ticket_markdown,
 )
+from app.services.impact_review_service import (
+    SYSTEM_LABELS,
+    build_baseline_from_impacts,
+    compute_stats,
+    dump_review_content,
+    now_utc,
+    parse_review_content,
+    reset_to_baseline,
+    selected_fields_by_system,
+)
+from app.services.ticket_card_builder import TicketTaskCard, _ACTION_CARD_SPECS
 from app.services.ticket_execution_planner import (
     ChildTicketContext,
     ExecutionPlannerInput,
@@ -65,6 +80,7 @@ from app.services.ticket_execution_planner import (
     RegulatoryDocumentContext,
     generate_execution_plan,
 )
+from app.services.ticket_quality_checker import check_ticket_card_quality
 from app.models.schemas import TicketPlanResponse
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -246,6 +262,16 @@ def generate_task_ticket(task_id: int, session: Session = Depends(get_session)) 
         session,
     )
     change_drafts = _load_change_drafts(task_id, session) or extract_reporting_changes(document_text)
+    confirmed_review = _load_confirmed_impact_review(task_id, session)
+    if confirmed_review is not None:
+        return _generate_review_ticket_plan(
+            task=task,
+            document_text=document_text,
+            review=parse_review_content(confirmed_review.review_content),
+            impact_drafts=impact_drafts,
+            change_drafts=change_drafts,
+            session=session,
+        )
     existing_report_codes = _load_existing_report_codes(session)
 
     classification = classify_change(
@@ -295,6 +321,408 @@ def generate_task_ticket(task_id: int, session: Session = Depends(get_session)) 
         parent=TicketDraftRead.model_validate(parent_row),
         children=[TicketDraftRead.model_validate(row) for row in child_rows],
     )
+
+
+@router.get("/{task_id}/impact-review", response_model=ImpactReviewResponse)
+def get_impact_review(task_id: int, session: Session = Depends(get_session)) -> ImpactReviewResponse:
+    _get_task_or_404(task_id, session)
+    row = _get_or_create_impact_review(task_id, session)
+    review = parse_review_content(row.review_content)
+    baseline = parse_review_content(row.ai_baseline_content)
+    return ImpactReviewResponse(
+        status=row.status,
+        review=review,
+        ai_baseline=baseline,
+        stats=compute_stats(review),
+    )
+
+
+@router.put("/{task_id}/impact-review", response_model=ImpactReviewSaveResponse)
+def save_impact_review(
+    task_id: int,
+    payload: ImpactReviewSaveRequest,
+    session: Session = Depends(get_session),
+) -> ImpactReviewSaveResponse:
+    _get_task_or_404(task_id, session)
+    row = _get_or_create_impact_review(task_id, session)
+    row.review_content = dump_review_content(payload.review)
+    row.status = "SAVED"
+    row.updated_at = now_utc()
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return ImpactReviewSaveResponse(ok=True, updated_at=row.updated_at)
+
+
+@router.post("/{task_id}/impact-review/reset", response_model=ImpactReviewResponse)
+def reset_impact_review(task_id: int, session: Session = Depends(get_session)) -> ImpactReviewResponse:
+    _get_task_or_404(task_id, session)
+    row = _get_or_create_impact_review(task_id, session)
+    baseline = parse_review_content(row.ai_baseline_content)
+    review = reset_to_baseline(baseline)
+    row.review_content = dump_review_content(review)
+    row.status = "EDITING"
+    row.confirmed_at = None
+    row.updated_at = now_utc()
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return ImpactReviewResponse(
+        status=row.status,
+        review=review,
+        ai_baseline=baseline,
+        stats=compute_stats(review),
+    )
+
+
+@router.post("/{task_id}/impact-review/confirm", response_model=TicketPlanResponse)
+def confirm_impact_review(
+    task_id: int,
+    payload: ImpactReviewSaveRequest | None = None,
+    session: Session = Depends(get_session),
+) -> TicketPlanResponse:
+    task = _get_task_or_404(task_id, session)
+    document = session.get(RegDocument, task.document_id)
+    document_text = document.parsed_text if document else ""
+    row = _get_or_create_impact_review(task_id, session)
+    review = payload.review if payload is not None else parse_review_content(row.review_content)
+    row.review_content = dump_review_content(review)
+    row.status = "CONFIRMED"
+    row.confirmed_at = now_utc()
+    row.updated_at = row.confirmed_at
+    session.add(row)
+
+    impacts = _load_impact_items(task_id, session)
+    if not impacts:
+        changes = extract_reporting_changes(document_text)
+        draft_impacts = analyze_reporting_impacts(changes, load_catalog_from_db(session))
+        _replace_reporting_candidates(task_id, changes, session)
+        _replace_reporting_impacts(task_id, draft_impacts, session)
+        impacts = [_impact_read_from_draft(item) for item in draft_impacts]
+    impact_drafts = _enrich_impact_drafts_with_catalog(
+        [_impact_draft_from_read(item) for item in impacts],
+        session,
+    )
+    change_drafts = _load_change_drafts(task_id, session) or extract_reporting_changes(document_text)
+    return _generate_review_ticket_plan(
+        task=task,
+        document_text=document_text,
+        review=review,
+        impact_drafts=impact_drafts,
+        change_drafts=change_drafts,
+        session=session,
+    )
+
+
+def _get_or_create_impact_review(task_id: int, session: Session) -> ReportingImpactReview:
+    row = session.exec(
+        select(ReportingImpactReview).where(ReportingImpactReview.task_id == task_id)
+    ).first()
+    if row is not None:
+        return row
+    baseline = build_baseline_from_impacts(_load_impact_items(task_id, session))
+    row = ReportingImpactReview(
+        task_id=task_id,
+        status="EDITING",
+        review_content=dump_review_content(baseline),
+        ai_baseline_content=dump_review_content(baseline),
+        updated_at=now_utc(),
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def _load_confirmed_impact_review(task_id: int, session: Session) -> ReportingImpactReview | None:
+    return session.exec(
+        select(ReportingImpactReview).where(
+            ReportingImpactReview.task_id == task_id,
+            ReportingImpactReview.status == "CONFIRMED",
+        )
+    ).first()
+
+
+def _generate_review_ticket_plan(
+    *,
+    task: RegTask,
+    document_text: str,
+    review: dict,
+    impact_drafts: list[ReportingImpactDraft],
+    change_drafts: list[ReportingChangeDraft],
+    session: Session,
+) -> TicketPlanResponse:
+    task_id = task.id or 0
+    existing_report_codes = _load_existing_report_codes(session)
+    classification = classify_change(
+        changes=change_drafts,
+        impacts=impact_drafts,
+        document_text=document_text,
+        existing_report_codes=existing_report_codes,
+    )
+    rule_cards_by_key = _build_rule_cards_lookup(impact_drafts, session)
+    parent_plan = build_ticket_plan(
+        classification,
+        impact_drafts,
+        task.title,
+        rule_cards_by_key=rule_cards_by_key,
+        historical_cases_by_key={},
+        document_text=document_text,
+    ).parent
+
+    for old in session.exec(select(TicketDraft).where(TicketDraft.task_id == task_id)).all():
+        session.delete(old)
+    session.flush()
+
+    parent_row = _persist_parent_ticket(task_id, parent_plan, session)
+    grouped = selected_fields_by_system(review)
+    child_rows = [
+        _persist_review_system_child_ticket(task_id, parent_row.id, group, session)
+        for _, group in sorted(grouped.items())
+    ]
+    if len(grouped) >= 2:
+        child_rows.append(
+            _persist_review_support_child_ticket(
+                task_id,
+                parent_row.id,
+                ActionTicketType.TEST_ACCEPTANCE,
+                grouped,
+                session,
+            )
+        )
+        child_rows.append(
+            _persist_review_support_child_ticket(
+                task_id,
+                parent_row.id,
+                ActionTicketType.ARCHIVE_REVIEW,
+                grouped,
+                session,
+            )
+        )
+
+    task.status = TaskStatus.TICKET_GENERATED
+    task.updated_at = datetime.utcnow()
+    session.add(task)
+    session.commit()
+    session.refresh(parent_row)
+    for row in child_rows:
+        session.refresh(row)
+
+    return TicketPlanResponse(
+        parent=TicketDraftRead.model_validate(parent_row),
+        children=[TicketDraftRead.model_validate(row) for row in child_rows],
+    )
+
+
+def _persist_review_system_child_ticket(
+    task_id: int,
+    parent_id: int | None,
+    group: dict,
+    session: Session,
+) -> TicketDraft:
+    action_type = _action_type_for_system(group["responsible_system"])
+    card = _review_group_card(action_type, group)
+    quality = check_ticket_card_quality(card)
+    row = TicketDraft(
+        task_id=task_id,
+        title=f"按系统处理｜{group['responsible_system_zh']}",
+        content=_render_review_child_markdown(card, group.get("business_notes", [])),
+        parent_ticket_id=parent_id,
+        ticket_role="CHILD",
+        action_ticket_type=action_type.value,
+        owner_role=card.owner_role.value,
+        executor_role=card.executor_role.value,
+        depends_on_lineage=card.action_type in {ActionTicketType.DATA_MAPPING, ActionTicketType.REPORT_PROCESSING},
+        business_signoff_required=bool(group.get("business_notes")),
+        related_impact_codes=json.dumps(_all_group_item_codes(group), ensure_ascii=False),
+        summary=card.summary,
+        responsible_system=card.responsible_system.value,
+        affected_systems=json.dumps([card.responsible_system.value], ensure_ascii=False),
+        affected_assets=json.dumps(card.affected_assets, ensure_ascii=False),
+        business_note="\n".join(group.get("business_notes", [])),
+        must_do=json.dumps(card.must_do, ensure_ascii=False),
+        must_confirm=json.dumps(card.must_confirm, ensure_ascii=False),
+        output_artifacts=json.dumps(card.output_artifacts, ensure_ascii=False),
+        acceptance_criteria_structured=json.dumps(card.acceptance_criteria, ensure_ascii=False),
+        blockers=json.dumps(card.blockers, ensure_ascii=False),
+        evidence_refs=json.dumps(card.evidence_refs, ensure_ascii=False),
+        historical_cases="[]",
+        quality_score=quality.score,
+        quality_flags=json.dumps(quality.flags, ensure_ascii=False),
+        status="DRAFT",
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _persist_review_support_child_ticket(
+    task_id: int,
+    parent_id: int | None,
+    action_type: ActionTicketType,
+    grouped: dict[str, dict],
+    session: Session,
+) -> TicketDraft:
+    system_code = (
+        ResponsibleSystem.TEST_ACCEPTANCE
+        if action_type == ActionTicketType.TEST_ACCEPTANCE
+        else ResponsibleSystem.KNOWLEDGE_ARCHIVE
+    )
+    support_group = {
+        "responsible_system": system_code.value,
+        "responsible_system_zh": SYSTEM_LABELS[system_code.value],
+        "items": [
+            item
+            for group in grouped.values()
+            for item in group.get("items", [])
+        ],
+        "business_notes": [
+            note
+            for group in grouped.values()
+            for note in group.get("business_notes", [])
+        ],
+    }
+    card = _review_group_card(action_type, support_group)
+    quality = check_ticket_card_quality(card)
+    row = TicketDraft(
+        task_id=task_id,
+        title=f"按系统处理｜{support_group['responsible_system_zh']}",
+        content=_render_review_child_markdown(card, support_group.get("business_notes", [])),
+        parent_ticket_id=parent_id,
+        ticket_role="CHILD",
+        action_ticket_type=action_type.value,
+        owner_role=card.owner_role.value,
+        executor_role=card.executor_role.value,
+        business_signoff_required=action_type == ActionTicketType.TEST_ACCEPTANCE,
+        closure_review_required=action_type == ActionTicketType.ARCHIVE_REVIEW,
+        related_impact_codes=json.dumps(_all_group_item_codes(support_group), ensure_ascii=False),
+        summary=card.summary,
+        responsible_system=card.responsible_system.value,
+        affected_systems=json.dumps([card.responsible_system.value], ensure_ascii=False),
+        affected_assets=json.dumps(card.affected_assets, ensure_ascii=False),
+        business_note="\n".join(dict.fromkeys(support_group.get("business_notes", []))),
+        must_do=json.dumps(card.must_do, ensure_ascii=False),
+        must_confirm=json.dumps(card.must_confirm, ensure_ascii=False),
+        output_artifacts=json.dumps(card.output_artifacts, ensure_ascii=False),
+        acceptance_criteria_structured=json.dumps(card.acceptance_criteria, ensure_ascii=False),
+        blockers=json.dumps(card.blockers, ensure_ascii=False),
+        evidence_refs=json.dumps(card.evidence_refs, ensure_ascii=False),
+        quality_score=quality.score,
+        quality_flags=json.dumps(quality.flags, ensure_ascii=False),
+        status="DRAFT",
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _review_group_card(action_type: ActionTicketType, group: dict) -> TicketTaskCard:
+    spec = _ACTION_CARD_SPECS[action_type]
+    fields = [
+        field
+        for item in group.get("items", [])
+        for field in item.get("fields", [])
+    ]
+    notes = list(dict.fromkeys(group.get("business_notes", [])))
+    summary = (
+        f"{group['responsible_system_zh']}需处理 {len(group.get('items', []))} 个报送项、"
+        f"{len(fields)} 个字段。"
+    )
+    if notes:
+        summary += f" 业务备注：{notes[0]}"
+    return TicketTaskCard(
+        action_type=action_type,
+        owner_role=spec.owner_role,
+        executor_role=spec.executor_role,
+        responsible_system=ResponsibleSystem(group["responsible_system"]),
+        summary=summary,
+        affected_assets=_review_affected_assets(group),
+        must_do=_review_must_do(action_type, fields),
+        must_confirm=spec.must_confirm,
+        output_artifacts=spec.output_artifacts,
+        acceptance_criteria=spec.acceptance_criteria,
+        blockers=[],
+        evidence_refs=[
+            {
+                "type": "impact_review",
+                "src": f"业务复核 · {group['responsible_system_zh']}",
+                "text": f"业务确认纳入 {len(fields)} 个字段。",
+            }
+        ],
+        historical_cases=[],
+    )
+
+
+def _review_affected_assets(group: dict) -> dict:
+    reporting_items = []
+    reporting_fields = []
+    source_fields = []
+    roles = []
+    seen_items: set[str] = set()
+    seen_fields: set[str] = set()
+    for item in group.get("items", []):
+        item_code = item.get("reporting_item_code") or ""
+        if item_code and item_code not in seen_items:
+            seen_items.add(item_code)
+            reporting_items.append({"code": item_code, "name": item.get("reporting_item_name") or item_code})
+        for field in item.get("fields", []):
+            code = field.get("field_code") or ""
+            if not code or code in seen_fields:
+                continue
+            seen_fields.add(code)
+            role = field.get("lineage_role") or ""
+            roles.append(role)
+            target = reporting_fields if role == "REPORT_FIELD" else source_fields
+            target.append({"code": code, "name": field.get("field_name") or code, "role": role})
+    return {
+        "reporting_items": reporting_items,
+        "reporting_fields": reporting_fields,
+        "source_fields": source_fields,
+        "lineage_roles": list(dict.fromkeys([role for role in roles if role])),
+    }
+
+
+def _review_must_do(action_type: ActionTicketType, fields: list[dict]) -> list[str]:
+    spec_items = _ACTION_CARD_SPECS[action_type].must_do[:4]
+    field_codes = [str(field.get("field_code") or "").strip() for field in fields if field.get("field_code")]
+    if field_codes:
+        return [*spec_items, f"按业务复核结果处理字段：{', '.join(field_codes[:6])}。"]
+    return spec_items
+
+
+def _action_type_for_system(system_code: str) -> ActionTicketType:
+    mapping = {
+        ResponsibleSystem.REG_REPORTING_SYSTEM.value: ActionTicketType.SCOPE_CONFIRM,
+        ResponsibleSystem.DATA_GOVERNANCE_PLATFORM.value: ActionTicketType.DATA_MAPPING,
+        ResponsibleSystem.DATA_MART_ETL.value: ActionTicketType.REPORT_PROCESSING,
+        ResponsibleSystem.SOURCE_SYSTEM.value: ActionTicketType.SOURCE_SYSTEM_CHANGE,
+        ResponsibleSystem.DATA_QUALITY_PLATFORM.value: ActionTicketType.VALIDATION_RULE,
+        ResponsibleSystem.TEST_ACCEPTANCE.value: ActionTicketType.TEST_ACCEPTANCE,
+        ResponsibleSystem.KNOWLEDGE_ARCHIVE.value: ActionTicketType.ARCHIVE_REVIEW,
+    }
+    return mapping.get(system_code, ActionTicketType.DATA_MAPPING)
+
+
+def _render_review_child_markdown(card: TicketTaskCard, notes: list[str]) -> str:
+    lines = [
+        f"# {card.responsible_system.value} 系统子单",
+        "",
+        f"## 摘要\n{card.summary}",
+        "",
+        "## 必做动作",
+        *[f"- {item}" for item in card.must_do],
+    ]
+    if notes:
+        lines.extend(["", "## 业务备注", *[f"- {note}" for note in dict.fromkeys(notes)]])
+    return "\n".join(lines)
+
+
+def _all_group_item_codes(group: dict) -> list[str]:
+    return list(dict.fromkeys(
+        item.get("reporting_item_code")
+        for item in group.get("items", [])
+        if item.get("reporting_item_code")
+    ))
 
 
 def _persist_parent_ticket(

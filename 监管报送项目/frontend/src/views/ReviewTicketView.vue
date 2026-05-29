@@ -146,6 +146,11 @@
       </section>
 
       <section v-else class="audit-panel">
+        <ImpactScopeReview
+          v-if="validParentTaskId !== null"
+          :task-id="validParentTaskId"
+          @confirmed="$emit('impact-review-confirmed')"
+        />
         <div v-if="checked.size" class="tv2-bulk">
           <CheckSquare :size="14" />
           已选 <b>{{ checked.size }}</b> / {{ childRows.length }}
@@ -470,6 +475,7 @@ import {
   X,
 } from "lucide-vue-next";
 import ExecutionPlanCard from "@/components/ExecutionPlanCard.vue";
+import ImpactScopeReview from "@/components/ImpactScopeReview.vue";
 import type { TaskWorkflow, TicketDraft } from "@/types/api";
 
 const props = defineProps<{
@@ -477,7 +483,7 @@ const props = defineProps<{
   busy: boolean;
 }>();
 
-const emit = defineEmits<{ back: []; finish: []; generate: [] }>();
+const emit = defineEmits<{ back: []; finish: []; generate: []; "impact-review-confirmed": [] }>();
 
 type FilterKey = "all" | "blocked" | "signoff" | "lowQuality" | "pendingConfirm";
 type SortKey = "quality" | "summary";

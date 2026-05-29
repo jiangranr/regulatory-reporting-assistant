@@ -28,6 +28,7 @@ const baseTicket: TicketDraft = {
   responsible_system: "",
   affected_systems: "",
   affected_assets: "",
+  business_note: "",
   must_do: "",
   must_confirm: "",
   output_artifacts: "",
@@ -119,6 +120,7 @@ async function openFirstChildDetail(wrapper: ReturnType<typeof mount>): Promise<
 
 const globalStubs = {
   ExecutionPlanCard: { template: "<div data-test=\"execution-plan-card-stub\" />" },
+  ImpactScopeReview: { template: "<div data-test=\"impact-scope-review-stub\" />" },
 };
 
 describe("ReviewTicketView", () => {
@@ -134,12 +136,14 @@ describe("ReviewTicketView", () => {
     });
 
     expect(wrapper.find(".ai-plan [data-test='execution-plan-card-stub']").exists()).toBe(true);
+    expect(wrapper.find("[data-test='impact-scope-review-stub']").exists()).toBe(false);
 
     const auditTab = wrapper.findAll("button").find((button) => button.text().includes("工单审核"));
     if (!auditTab) throw new Error("工单审核 tab not found");
     await auditTab.trigger("click");
 
     expect(wrapper.find("[data-test='execution-plan-card-stub']").exists()).toBe(false);
+    expect(wrapper.find("[data-test='impact-scope-review-stub']").exists()).toBe(true);
   });
 
   it("renders structured ticket fields and hides the fixed SQL draft block", async () => {

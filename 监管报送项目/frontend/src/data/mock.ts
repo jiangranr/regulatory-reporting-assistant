@@ -104,6 +104,7 @@ export const sampleTicket: TicketDraft = {
   responsible_system: "",
   affected_systems: "[]",
   affected_assets: "{}",
+  business_note: "",
   must_do: "[]",
   must_confirm: "[]",
   output_artifacts: "[]",

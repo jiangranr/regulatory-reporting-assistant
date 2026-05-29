@@ -4,6 +4,8 @@ import type {
   ConceptMatchHit,
   DocumentTaskProfile,
   ExtractionResult,
+  ImpactReviewContent,
+  ImpactReviewResponse,
   InstructionChangeAnalysis,
   RawDocumentText,
   RegDocument,
@@ -30,6 +32,10 @@ export interface ApiClient {
   listTasks(): Promise<RegTask[]>;
   createTaskFromDocument(documentId: number): Promise<RegTask>;
   getTaskWorkflow(taskId: number): Promise<TaskWorkflow>;
+  getImpactReview(taskId: number): Promise<ImpactReviewResponse>;
+  saveImpactReview(taskId: number, review: ImpactReviewContent): Promise<{ ok: true; updated_at: string }>;
+  confirmImpactReview(taskId: number, review?: ImpactReviewContent): Promise<TicketPlanResponse>;
+  resetImpactReview(taskId: number): Promise<ImpactReviewResponse>;
   profileDocument(documentId: number): Promise<DocumentTaskProfile>;
   getDocumentProfile(documentId: number): Promise<DocumentTaskProfile | null>;
   analyzeInstructionChanges(documentId: number, objectCode?: string): Promise<InstructionChangeAnalysis>;
@@ -100,6 +106,21 @@ export function createApiClient(baseUrl = "/api", fetcher: typeof fetch = fetch)
     createTaskFromDocument: (documentId) =>
       request<RegTask>(`/tasks/from-document/${documentId}`, { method: "POST" }),
     getTaskWorkflow: (taskId) => request<TaskWorkflow>(`/tasks/${taskId}/workflow`),
+    getImpactReview: (taskId) => request<ImpactReviewResponse>(`/tasks/${taskId}/impact-review`),
+    saveImpactReview: (taskId, review) =>
+      request<{ ok: true; updated_at: string }>(`/tasks/${taskId}/impact-review`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ review }),
+      }),
+    confirmImpactReview: (taskId, review) =>
+      request<TicketPlanResponse>(`/tasks/${taskId}/impact-review/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(review ? { review } : {}),
+      }),
+    resetImpactReview: (taskId) =>
+      request<ImpactReviewResponse>(`/tasks/${taskId}/impact-review/reset`, { method: "POST" }),
     profileDocument: (documentId) =>
       request<DocumentTaskProfile>(`/documents/${documentId}/profile`, { method: "POST" }),
     getDocumentProfile: (documentId) =>

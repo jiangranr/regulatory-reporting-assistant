@@ -86,6 +86,7 @@ export interface TicketDraft {
   responsible_system: string;
   affected_systems: string;
   affected_assets: string;
+  business_note: string;
   must_do: string;
   must_confirm: string;
   output_artifacts: string;
@@ -112,6 +113,54 @@ export type ResponsibleSystem =
   | "DATA_QUALITY_PLATFORM"
   | "TEST_ACCEPTANCE"
   | "KNOWLEDGE_ARCHIVE";
+
+export type ImpactReviewStatus = "EDITING" | "SAVED" | "CONFIRMED";
+export type ImpactReviewFieldSource = "AI" | "BUSINESS";
+
+export interface ImpactReviewField {
+  field_code: string;
+  field_name: string;
+  lineage_role: string;
+  source: ImpactReviewFieldSource;
+  selected: boolean;
+  edited?: boolean;
+  removed?: boolean;
+  is_required?: boolean;
+}
+
+export interface ImpactReviewSystem {
+  responsible_system: ResponsibleSystem;
+  responsible_system_zh: string;
+  fields: ImpactReviewField[];
+}
+
+export interface ImpactReviewItem {
+  reporting_item_code: string;
+  reporting_item_name: string;
+  removed: boolean;
+  business_note: string;
+  systems: ImpactReviewSystem[];
+}
+
+export interface ImpactReviewContent {
+  version: "v1";
+  items: ImpactReviewItem[];
+}
+
+export interface ImpactReviewStats {
+  total_items: number;
+  total_systems: number;
+  selected_fields: number;
+  business_added_fields: number;
+  business_removed_fields: number;
+}
+
+export interface ImpactReviewResponse {
+  status: ImpactReviewStatus;
+  review: ImpactReviewContent;
+  ai_baseline: ImpactReviewContent;
+  stats: ImpactReviewStats;
+}
 
 export interface ExecutionTask {
   team: ResponsibleSystem;

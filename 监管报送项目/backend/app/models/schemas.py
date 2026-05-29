@@ -125,6 +125,7 @@ class TicketDraftRead(BaseModel):
     responsible_system: str = ""
     affected_systems: str = "[]"
     affected_assets: str = "{}"
+    business_note: str = ""
     must_do: str = "[]"
     must_confirm: str = "[]"
     output_artifacts: str = "[]"
@@ -143,6 +144,22 @@ class TicketPlanResponse(BaseModel):
 
     parent: TicketDraftRead
     children: list[TicketDraftRead]
+
+
+class ImpactReviewSaveRequest(BaseModel):
+    review: dict
+
+
+class ImpactReviewResponse(BaseModel):
+    status: str
+    review: dict
+    ai_baseline: dict
+    stats: dict
+
+
+class ImpactReviewSaveResponse(BaseModel):
+    ok: bool = True
+    updated_at: datetime
 
 
 class WorkflowStepRead(BaseModel):

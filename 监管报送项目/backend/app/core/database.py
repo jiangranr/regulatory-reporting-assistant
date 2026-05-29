@@ -34,6 +34,7 @@ def init_db() -> None:
     _ensure_reg_reporting_item_columns()
     _ensure_reg_reporting_item_dimension_columns()
     _ensure_reg_reporting_impact_columns()
+    _ensure_reporting_impact_review_columns()
     _ensure_ticket_draft_columns()
     _ensure_reg_reporting_change_candidate_columns()
     _ensure_reg_task_execution_plan_columns()
@@ -208,6 +209,32 @@ def _ensure_reg_reporting_impact_columns() -> None:
                     )
 
 
+def _ensure_reporting_impact_review_columns() -> None:
+    """补 reporting_impact_review 表的可选列（旧库兼容）。"""
+    inspector = inspect(engine)
+    if "reporting_impact_review" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("reporting_impact_review")}
+    text_column = "TEXT" if engine.dialect.name in {"mysql", "mariadb"} else "TEXT DEFAULT '{}'"
+    new_cols = [
+        ("status", "VARCHAR(20) DEFAULT 'EDITING'", None),
+        ("review_content", text_column, "{}"),
+        ("ai_baseline_content", text_column, "{}"),
+        ("confirmed_at", "DATETIME DEFAULT NULL", None),
+        ("confirmed_by", "VARCHAR(64) DEFAULT ''", None),
+        ("updated_at", "DATETIME", None),
+    ]
+    with engine.begin() as connection:
+        for name, ddl, default in new_cols:
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE reporting_impact_review ADD COLUMN {name} {ddl}"))
+                if default is not None:
+                    connection.execute(
+                        text(f"UPDATE reporting_impact_review SET `{name}` = :val WHERE `{name}` IS NULL"),
+                        {"val": default},
+                    )
+
+
 def _ensure_ticket_draft_columns() -> None:
     """补充 ticket_drafts 的母子单结构列（旧库兼容）。"""
     inspector = inspect(engine)
@@ -234,6 +261,7 @@ def _ensure_ticket_draft_columns() -> None:
         ("responsible_system", "VARCHAR(80) DEFAULT ''"),
         ("affected_systems", "TEXT"),
         ("affected_assets", "TEXT"),
+        ("business_note", "TEXT"),
         ("must_do", "TEXT"),
         ("must_confirm", "TEXT"),
         ("output_artifacts", "TEXT"),
@@ -271,6 +299,7 @@ def _ensure_ticket_draft_columns() -> None:
             )
         connection.execute(text("UPDATE ticket_drafts SET summary = '' WHERE summary IS NULL"))
         connection.execute(text("UPDATE ticket_drafts SET responsible_system = '' WHERE responsible_system IS NULL"))
+        connection.execute(text("UPDATE ticket_drafts SET business_note = '' WHERE business_note IS NULL"))
 
 
 def _ensure_reg_reporting_change_candidate_columns() -> None:

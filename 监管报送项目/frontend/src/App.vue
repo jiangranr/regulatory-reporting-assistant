@@ -64,6 +64,7 @@
       :workflow="taskWorkflow"
       :busy="busy"
       @generate="generateTicket"
+      @impact-review-confirmed="refreshTicketWorkflow"
       @back="activePage = 'impact'"
       @finish="activePage = 'dashboard'"
     />
@@ -449,6 +450,13 @@ async function generateTicket(): Promise<void> {
   if (!taskWorkflow.value) return;
   await withBusy(async () => {
     await apiClient.generateTicket(taskWorkflow.value!.task.id);
+    taskWorkflow.value = await apiClient.getTaskWorkflow(taskWorkflow.value!.task.id);
+  });
+}
+
+async function refreshTicketWorkflow(): Promise<void> {
+  if (!taskWorkflow.value) return;
+  await withBusy(async () => {
     taskWorkflow.value = await apiClient.getTaskWorkflow(taskWorkflow.value!.task.id);
   });
 }
