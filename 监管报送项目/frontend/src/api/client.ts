@@ -15,6 +15,8 @@ import type {
   TicketPlanResponse,
   ImpactItem,
   TripletUploadResponse,
+  QAResponse,
+  QAQueryableItem,
 } from "@/types/api";
 
 export interface ApiClient {
@@ -60,6 +62,9 @@ export interface ApiClient {
   uploadCatalogZip(file: File, sourceRef?: string, objectCodes?: string): Promise<CatalogBatch>;
   getCatalogBatch(batchId: number): Promise<CatalogBatch>;
   listCatalogBatches(): Promise<CatalogBatch[]>;
+  askIndicator(question: string, itemCode?: string, anomalyValue?: string): Promise<QAResponse>;
+  listQueryableItems(objectCode?: string): Promise<QAQueryableItem[]>;
+  bootstrapAll(): Promise<Record<string, unknown>>;
 }
 
 export function createApiClient(baseUrl = "/api", fetcher: typeof fetch = fetch): ApiClient {
@@ -186,6 +191,18 @@ export function createApiClient(baseUrl = "/api", fetcher: typeof fetch = fetch)
     },
     getCatalogBatch: (batchId) => request<CatalogBatch>(`/catalog/batches/${batchId}`),
     listCatalogBatches: () => request<CatalogBatch[]>("/catalog/batches"),
+    askIndicator: (question, itemCode, anomalyValue) => {
+      const params = new URLSearchParams({ question });
+      if (itemCode) params.set("item_code", itemCode);
+      if (anomalyValue) params.set("anomaly_value", anomalyValue);
+      return request<QAResponse>(`/indicator-qa/ask?${params}`, { method: "POST" });
+    },
+    listQueryableItems: (objectCode) => {
+      const params = objectCode ? `?object_code=${encodeURIComponent(objectCode)}` : "";
+      return request<QAQueryableItem[]>(`/indicator-qa/items${params}`);
+    },
+    bootstrapAll: () =>
+      request<Record<string, unknown>>("/reporting/bootstrap-all", { method: "POST" }),
   };
 }
 

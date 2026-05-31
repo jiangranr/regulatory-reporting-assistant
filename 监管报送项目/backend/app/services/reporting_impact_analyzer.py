@@ -67,6 +67,9 @@ def analyze_reporting_impacts(
         roles = list(dict.fromkeys(row["lineage_role"] for row in lineage_rows))
         item_name = item_names.get(change.reporting_item_code, change.reporting_item_code)
         reporting_field = reporting_fields[0] if reporting_fields else ""
+        # 把 REPORT_FIELD 也并进 details，让 baseline 能按 system_code 分桶时
+        # 把 rpt_xxx 字段自然归到 RPT_1104 桶，而不是和 DM 字段混在 DATA_MART_ETL。
+        detail_rows = [*reporting_rows, *source_rows]
         ticket_scope = classify_scope_range_tickets(
             change_type=change.change_type,
             lineage_roles=roles,
@@ -85,7 +88,7 @@ def analyze_reporting_impacts(
                     field_names,
                 ),
                 impacted_source_fields=list(dict.fromkeys(source_fields)),
-                impacted_source_field_details=_source_field_details(source_rows, field_names),
+                impacted_source_field_details=_source_field_details(detail_rows, field_names),
                 impacted_lineage_roles=roles,
                 impact_reason=(
                     f"{item_name}发生{change.change_type}"
@@ -240,6 +243,13 @@ def _source_field_details(
     lineage_rows: list[dict[str, str]],
     field_names: dict[str, str],
 ) -> list[dict[str, str]]:
+    """把 lineage 行展开成字段明细列表，每条带 system_code/system_name/system_type/owner_team。
+
+    system_* 字段来自 loader 的 4 表 join（lineage→item→field→system）；
+    in-memory seed 通过 build_1104_seed_catalog 回填，形状一致。
+    如果上游缺失（旧 catalog 没回填），保留空字符串——下游 baseline 会把
+    缺 system_code 的字段归入 UNKNOWN 桶。
+    """
     details: list[dict[str, str]] = []
     seen: set[str] = set()
     for row in lineage_rows:
@@ -251,5 +261,9 @@ def _source_field_details(
             "code": code,
             "name": row.get("data_field_name") or field_names.get(code, "") or code,
             "role": row.get("lineage_role", ""),
+            "system_code": row.get("system_code", "") or "",
+            "system_name": row.get("system_name", "") or "",
+            "system_type": row.get("system_type", "") or "",
+            "owner_team": row.get("owner_team", "") or "",
         })
     return details

@@ -129,8 +129,14 @@ export interface ImpactReviewField {
 }
 
 export interface ImpactReviewSystem {
-  responsible_system: ResponsibleSystem;
+  // 后端按真实 data_system_catalog.system_code 分桶（如 "RPT_1104"/"VALUATION"），
+  // 不再局限于抽象的 ResponsibleSystem enum；保留 ResponsibleSystem 类型用于兼容
+  // 旧支持单（TEST_ACCEPTANCE/KNOWLEDGE_ARCHIVE 等）。
+  responsible_system: ResponsibleSystem | string;
   responsible_system_zh: string;
+  // 用于下游推 action_type/owner_team，缺失时取空串
+  system_type?: string;
+  owner_team?: string;
   fields: ImpactReviewField[];
 }
 
@@ -169,6 +175,54 @@ export interface ExecutionTask {
   ticket_id: number;
   is_blocker: boolean;
   blocker_reason?: string | null;
+}
+
+// ── 参考 SQL API types ─────────────────────────────────────────────────────
+// Keep synchronized with backend/app/models/schemas.py::ReferenceSqlResponse
+
+export type SqlStatus =
+  | "NOT_GENERATED"
+  | "READY"
+  | "DEGRADED"
+  | "EDITED_BY_USER"
+  | "STALE"
+  | "NOT_APPLICABLE";
+
+export type SqlAbility =
+  | "CAN_GENERATE"
+  | "PARTIAL"
+  | "VALIDATION_ONLY"
+  | "NOT_APPLICABLE"
+  | "";
+
+export type SqlWarningSeverity = "ERROR" | "WARNING" | "INFO";
+
+export type SqlWarningType =
+  | "FIELD_NOT_IN_SCOPE"
+  | "TABLE_NOT_IN_CATALOG"
+  | "SYNTAX_ERROR"
+  | "LLM_FAILED";
+
+export interface SqlWarning {
+  type: SqlWarningType | string;
+  message: string;
+  field_code: string;
+  severity: SqlWarningSeverity;
+}
+
+export interface ReferenceSqlResponse {
+  ticket_id: number;
+  status: SqlStatus;
+  ability: SqlAbility;
+  reference_sql: string;
+  sql_dialect: string;
+  confidence: number;
+  explanation: string;
+  assumptions: string[];
+  warnings: SqlWarning[];
+  not_applicable_reason: string;
+  generated_at: string | null;
+  generated_by: string;
 }
 
 export interface ExecutionPhase {
@@ -596,4 +650,60 @@ export interface CatalogBatch {
   created_at: string;
   finished_at?: string;
   items?: CatalogBatchItem[];
+}
+
+// ── 指标问答 ──────────────────────────────────────────────────────────────────
+
+export type QAMode = 'explanation' | 'anomaly';
+export type HypothesisStatus = 'checked' | 'uncertain' | 'out_of_scope';
+
+export interface QAHypothesis {
+  label: string;
+  status: HypothesisStatus;
+  evidence: string;
+  action: string;
+}
+
+export interface QAInstructionExcerpt {
+  text: string;
+  source_label: string;
+  item_name?: string;
+  field_tag?: string;
+  match_type?: "exact" | "keyword" | "semantic";
+  score?: number;
+}
+
+export interface QALineageField {
+  field_code: string;
+  field_name: string;
+  table_name: string;
+  system_name: string;
+  lineage_role: string;
+}
+
+export interface QARelatedTicket {
+  ticket_id: number;
+  title: string;
+  status: string;
+}
+
+export interface QAResponse {
+  mode: QAMode;
+  item_code: string;
+  item_name: string;
+  // 解释模式
+  instruction_excerpts: QAInstructionExcerpt[];
+  plain_explanation: string;
+  key_points: string[];
+  // 排查模式
+  hypotheses: QAHypothesis[];
+  // 通用
+  lineage_fields: QALineageField[];
+  related_tickets: QARelatedTicket[];
+  error: string;
+}
+
+export interface QAQueryableItem {
+  item_code: string;
+  item_name: string;
 }

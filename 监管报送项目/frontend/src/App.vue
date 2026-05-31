@@ -77,6 +77,7 @@
       :busy="busy"
     />
     <ConceptsView v-else-if="activePage === 'concepts'" />
+    <IndicatorQAView v-else-if="activePage === 'indicator-qa'" />
   </AppShell>
 </template>
 
@@ -94,6 +95,7 @@ import TicketView from "@/views/ReviewTicketView.vue";
 import CatalogUploadView from "@/views/CatalogUploadView.vue";
 import LibraryView from "@/views/LibraryView.vue";
 import ConceptsView from "@/views/ConceptsView.vue";
+import IndicatorQAView from "@/views/IndicatorQAView.vue";
 import type {
   ConceptMatchHit,
   DocumentTaskProfile,

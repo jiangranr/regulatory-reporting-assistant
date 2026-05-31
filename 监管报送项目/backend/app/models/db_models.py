@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, LargeBinary, Text, UniqueConstraint
+from sqlalchemy import Column, LargeBinary, String, Text, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from app.models.enums import DocumentStatus, RiskLevel, TaskStatus
@@ -787,4 +787,56 @@ class RegReportingItemDimension(SQLModel, table=True):
     member_id: int = Field(index=True)
     axis: str = "ROW"              # ROW / COLUMN
     display_order: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RegFieldChangeRecord(SQLModel, table=True):
+    """字段目录版本变更记录（监管发文新增/删除/修改指标时写入）。
+
+    每条记录对应一个指标的一次变更事件，是六路由工单的生成依据。
+    """
+    __tablename__ = "reg_field_change_records"
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: int = Field(index=True)                            # 关联触发此次检测的任务
+    reporting_object_code: str = Field(index=True)             # 所属报表（如 G31）
+    reporting_item_code: str = Field(index=True)               # 变更的指标编码
+    item_name: str = ""                                         # 指标名称
+    change_type: str = Field(index=True)                       # ADDED / DELETED / MODIFIED
+    before_snapshot: str = Field(default="{}", sa_column=Column(Text))   # JSON，变更前定义
+    after_snapshot: str = Field(default="{}", sa_column=Column(Text))    # JSON，变更后定义
+    library_hit: bool = False                                   # 是否命中 reporting_item_lineage
+    ticket_id: int | None = Field(default=None, index=True)    # 生成的工单 ID（若有）
+    status: str = "PENDING"  # PENDING / TICKET_GENERATED / IGNORED / ALERT
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RegInstructionChunk(SQLModel, table=True):
+    """填报说明切片（RAG 语料）。
+
+    每条记录是一个可检索的文本块，关联到来源文件和报表对象。
+    """
+    __tablename__ = "reg_instruction_chunks"
+
+    id: int | None = Field(default=None, primary_key=True)
+    reporting_object_code: str = Field(index=True)  # 所属报表（如 G31）
+    source_file: str = ""                            # 来源文件名
+    chunk_index: int = 0                             # 切片序号（文件内顺序）
+    chunk_text: str = Field(default="", sa_column=Column(Text))   # 原文文本
+    source_label: str = ""                           # 前缀标注，如 "G31《投资业务情况表》· 第三部分"
+    field_tag: str = Field(default="", sa_column=Column(String(200), index=True, default=""))   # 字段列标识，如 "C"、"1.1"、"98"
+    item_name: str = Field(default="", sa_column=Column(String(200), index=True, default=""))  # 字段中文名，如 "修正久期"
+    embedding: bytes | None = Field(default=None, sa_column=Column(LargeBinary))  # numpy float32 向量
+    model_version: str = ""                          # embedding 模型版本
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class DataFieldEmbedding(SQLModel, table=True):
+    """DataFieldCatalog 字段的 embedding 向量（供推荐引擎语义搜索）。"""
+    __tablename__ = "data_field_embeddings"
+
+    id: int | None = Field(default=None, primary_key=True)
+    field_id: int = Field(index=True, unique=True)   # 关联 DataFieldCatalog.id
+    embedding: bytes = Field(sa_column=Column(LargeBinary))
+    model_version: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)

@@ -25,8 +25,71 @@ from app.models.schemas import (
     ReportingSeedResponse,
 )
 from app.services.concept_seed import seed_concepts_and_rule_cards
+from app.services.embedding_indexer import build_instruction_index
 from app.services.reporting_item_scope import is_analysis_item
 from app.services.reporting_seed import ReportingSeedCatalog, build_1104_seed_catalog
+from app.services.source_recommender import build_field_embeddings, recommend_source
+
+# G31 详细 item（A/B/C/D/E 列），bootstrap-all 时用于补齐 DB
+_G31_DETAIL_ITEMS = [
+    {"item_code": "G31.PART_I.1_0.A_穿透前_期末余额",          "item_name": "1 行·A 列 · 穿透前·期末余额",                           "row_label": "1.债券投资合计", "column_label": "A·穿透前·期末余额",                     "source_cell_ref": "C5"},
+    {"item_code": "G31.PART_I.1_0.B_投资收入_年初至报告期末数", "item_name": "1 行·B 列 · 投资收入·年初至报告期末数",                 "row_label": "1.债券投资合计", "column_label": "B·投资收入·年初至报告期末数",           "source_cell_ref": "D5"},
+    {"item_code": "G31.PART_I.1_0.C_修正久期",                  "item_name": "1 行·C 列 · 修正久期",                                  "row_label": "1.债券投资合计", "column_label": "C·修正久期",                             "source_cell_ref": "E5"},
+    {"item_code": "G31.PART_I.1_0.D_因持有非底层资产而间接持有_期末余额", "item_name": "1 行·D 列 · 因持有非底层资产而间接持有·期末余额", "row_label": "1.债券投资合计", "column_label": "D·因持有非底层资产而间接持有·期末余额", "source_cell_ref": "F5"},
+    {"item_code": "G31.PART_I.1_0.单位_万元_E_穿透后_期末余额", "item_name": "1 行·E 列 · 穿透后·期末余额（单位：万元）",             "row_label": "1.债券投资合计", "column_label": "E·穿透后·期末余额",                     "source_cell_ref": "G5"},
+]
+
+
+def _ensure_g31_detail_items(session: Session) -> tuple[int, int]:
+    """补齐 G31 详细 item（A-E 列）。返回 (inserted, updated)。"""
+    obj = session.exec(
+        select(RegReportingObject).where(RegReportingObject.object_code == "G31")
+    ).first()
+    if obj is None or obj.id is None:
+        return 0, 0
+
+    section = session.exec(
+        select(RegReportingSection).where(
+            RegReportingSection.reporting_object_id == obj.id,
+            RegReportingSection.section_code == "PART_I",
+        )
+    ).first()
+    if section is None or section.id is None:
+        return 0, 0
+
+    inserted = updated = 0
+    for row in _G31_DETAIL_ITEMS:
+        item = session.exec(
+            select(RegReportingItem).where(RegReportingItem.item_code == row["item_code"])
+        ).first()
+        payload = {
+            "reporting_object_id": obj.id,
+            "reporting_section_id": section.id,
+            "item_code": row["item_code"],
+            "item_name": row["item_name"],
+            "item_type": "INDICATOR",
+            "row_label": row["row_label"],
+            "column_label": row["column_label"],
+            "measure_type": "余额",
+            "unit": "万元",
+            "status": "ACTIVE",
+            "change_status": "UNCHANGED",
+            "source_cell_ref": row["source_cell_ref"],
+            "cell_role": "FILLABLE",
+            "is_fillable": True,
+            "is_derived": False,
+            "data_type": "DECIMAL",
+        }
+        if item is None:
+            session.add(RegReportingItem(**payload))
+            inserted += 1
+        else:
+            for k, v in payload.items():
+                setattr(item, k, v)
+            session.add(item)
+            updated += 1
+    session.flush()
+    return inserted, updated
 
 router = APIRouter(prefix="/api/reporting", tags=["reporting-catalog"])
 
@@ -49,6 +112,135 @@ def seed_1104_catalog(session: Session = Depends(get_session)) -> ReportingSeedR
         concepts=concept_stats["concepts_added"],
         rule_cards=concept_stats["rule_cards_added"],
     )
+
+
+@router.post("/bootstrap-all")
+def bootstrap_all(session: Session = Depends(get_session)) -> dict:
+    """一键全量引导：基础目录 + G31 详细 item + G31 详细血缘 + 概念库。
+
+    幂等，可重复运行。执行顺序：
+    1. 灌 1104 基础目录（含 G24/G21/G25/G27/G31 基础血缘）
+    2. 补齐 G31 A-E 列 item（Excel 解析产出的详细指标）
+    3. 灌 G31 详细血缘（7 系统 / 26 字段 / 36 条血缘，mapping_status=SEED_CONFIRMED）
+    4. 灌概念库 + 规则卡片
+    """
+    from scripts import seed_g31_lineage_reference as g31_seed
+
+    # Step 1: 基础目录（含血缘写入 ReportingItemLineage）
+    catalog = build_1104_seed_catalog()
+    _upsert_seed_catalog(session, catalog)
+    session.flush()
+
+    # Step 2: G31 详细 item
+    g31_items_inserted, g31_items_updated = _ensure_g31_detail_items(session)
+    session.flush()
+
+    # Step 3: G31 详细血缘
+    system_by_code = g31_seed.upsert_systems(session)
+    field_by_code = g31_seed.upsert_fields(session, system_by_code)
+    # 详细血缘写入时统一设 SEED_CONFIRMED
+    for item_code, field_code, role, expression, confidence in g31_seed.LINEAGE:
+        item = session.exec(
+            select(RegReportingItem).where(RegReportingItem.item_code == item_code)
+        ).first()
+        field = field_by_code.get(field_code)
+        if item is None or item.id is None or field is None or field.id is None:
+            continue
+        existing = session.exec(
+            select(ReportingItemLineage).where(
+                ReportingItemLineage.reporting_item_id == item.id,
+                ReportingItemLineage.data_field_id == field.id,
+                ReportingItemLineage.lineage_role == role,
+            )
+        ).first()
+        payload = {
+            "reporting_item_id": item.id,
+            "data_field_id": field.id,
+            "lineage_role": role,
+            "transform_expression": expression,
+            "confidence_level": confidence,
+            "mapping_status": "SEED_CONFIRMED",
+            "evidence": "G31 参考血缘种子数据",
+            "owner_team": field.owner_team,
+        }
+        if existing is None:
+            session.add(ReportingItemLineage(**payload))
+        else:
+            for k, v in payload.items():
+                setattr(existing, k, v)
+            session.add(existing)
+    session.flush()
+
+    # Step 4: 概念库
+    concept_stats = seed_concepts_and_rule_cards(session)
+
+    session.commit()
+    return {
+        "status": "ok",
+        "basic_lineage": len(catalog.lineage),
+        "g31_items_inserted": g31_items_inserted,
+        "g31_items_updated": g31_items_updated,
+        "g31_systems": len(g31_seed.DATA_SYSTEMS),
+        "g31_fields": len(g31_seed.DATA_FIELDS),
+        "g31_lineage": len(g31_seed.LINEAGE),
+        "concepts_added": concept_stats["concepts_added"],
+        "rule_cards_added": concept_stats["rule_cards_added"],
+    }
+
+
+@router.post("/build-instruction-index")
+def build_instruction_index_endpoint(
+    force_rebuild: bool = False,
+    session: Session = Depends(get_session),
+) -> dict:
+    """解析 G01/G31 填报说明 .doc 文件，切片后建 embedding 索引。
+
+    force_rebuild=true 时清空现有记录重建。
+    首次调用或文件更新后调用一次即可，不需要每次启动都调用。
+    """
+    return build_instruction_index(session, force_rebuild=force_rebuild)
+
+
+@router.post("/build-field-embeddings")
+def build_field_embeddings_endpoint(
+    force_rebuild: bool = False,
+    session: Session = Depends(get_session),
+) -> dict:
+    """为 DataFieldCatalog 所有字段构建 embedding 索引（供推荐引擎使用）。
+
+    首次调用或字段目录更新后调用一次即可。
+    """
+    return build_field_embeddings(session, force_rebuild=force_rebuild)
+
+
+@router.post("/recommend-source")
+def recommend_source_endpoint(
+    item_code: str,
+    item_name: str,
+    definition: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """为新增指标推荐数据来源字段（关键词+语义+LLM 推理）。"""
+    result = recommend_source(item_code, item_name, definition, session)
+    return {
+        "item_code": result.item_code,
+        "item_name": result.item_name,
+        "candidates": [
+            {
+                "field_code": c.field_code,
+                "field_name": c.field_name,
+                "table_name": c.table_name,
+                "system_code": c.system_code,
+                "system_name": c.system_name,
+                "business_meaning": c.business_meaning,
+                "reasoning": c.reasoning,
+                "match_method": c.match_method,
+            }
+            for c in result.candidates
+        ],
+        "unresolved": result.unresolved,
+        "escalate_to_human": result.escalate_to_human,
+    }
 
 
 @router.get("/objects", response_model=list[ReportingObjectRead])
@@ -347,7 +539,7 @@ def _upsert_seed_catalog(session: Session, catalog: ReportingSeedCatalog) -> Non
             "lineage_role": row["lineage_role"],
             "transform_expression": row["transform_logic"],
             "confidence_level": row["confidence_level"],
-            "mapping_status": row["review_status"],
+            "mapping_status": "SEED_CONFIRMED",
             "evidence": row["evidence_ref"],
         }
         if lineage is None:

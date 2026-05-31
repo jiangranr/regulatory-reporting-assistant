@@ -149,9 +149,11 @@
         <ImpactScopeReview
           v-if="validParentTaskId !== null"
           :task-id="validParentTaskId"
-          @confirmed="$emit('impact-review-confirmed')"
+          :active-stage="auditStage"
+          @stage-change="auditStage = $event"
+          @confirmed="onImpactReviewConfirmed"
         />
-        <div class="ticket-grid">
+        <div v-if="auditStage === 3" class="ticket-grid">
           <aside class="layer-panel">
             <div class="sec-h">
               <h2>分层工单</h2>
@@ -220,29 +222,49 @@
                 <h4>背景与变更来源</h4>
                 <div class="reg-summary">
                   <div class="reg-summary-label">监管原文摘要</div>
-                  <ul v-if="regulatorySummaryItems.length" class="doc-list reg-summary-list">
-                    <li v-for="item in regulatorySummaryItems" :key="item">{{ item }}</li>
-                  </ul>
+                  <div v-if="regulatorySummaryItems.length" class="reg-evidence-list">
+                    <article v-for="item in regulatorySummaryItems" :key="item.key" class="reg-evidence-card">
+                      <div v-if="item.label" class="reg-evidence-label">{{ item.label }}</div>
+                      <div v-for="row in item.rows" :key="row.key" class="reg-evidence-row">
+                        <span v-if="row.action" class="reg-evidence-meta">
+                          {{ row.action }} · {{ row.author || "未知作者" }} · {{ row.date || "日期未知" }}
+                        </span>
+                        <span class="reg-evidence-body">
+                          <template v-for="(segment, index) in row.segments" :key="index">
+                            <mark
+                              v-if="segment.operation"
+                              :class="['reg-revision-mark', revisionClass(segment.operation)]"
+                              :title="segment.title || revisionSegmentTitle(segment)"
+                            >{{ segment.text }}</mark>
+                            <mark v-else-if="segment.highlighted" class="reg-evidence-highlight">{{ segment.text }}</mark>
+                            <span v-else>{{ segment.text }}</span>
+                          </template>
+                        </span>
+                      </div>
+                    </article>
+                  </div>
                   <p v-else class="pending-text">监管原文摘要接口待完善。</p>
                 </div>
               </section>
 
               <section class="doc-section">
                 <h4>影响范围</h4>
-                <div v-if="activeRow.assetEntries.length" class="asset-chip-group">
-                  <template v-for="entry in activeRow.assetEntries" :key="entry.key">
-                    <span
-                      v-for="value in entry.values"
-                      :key="entry.key + value.code + value.name"
-                      class="tag outline mono"
-                      :title="`${entry.key}${value.role ? ' · ' + value.role : ''}`"
-                    >
-                      {{ value.code || value.name }}
-                    </span>
-                    <span v-if="entry.hiddenCount" :key="entry.key + '-more'" class="tag outline mono">
-                      +{{ entry.hiddenCount }} {{ entry.key }}
-                    </span>
-                  </template>
+                <div v-if="activeRow.scopeFields.length" class="impact-scope-block">
+                  <div class="scope-field-list">
+                    <div v-for="field in activeRow.scopeFields" :key="field.code" class="scope-field">
+                      <code>{{ field.code }}</code>
+                      <span v-if="field.name && field.name !== field.code" class="scope-field-name">{{ field.name }}</span>
+                      <span v-else class="scope-field-name pending">中文名接口待完善</span>
+                    </div>
+                  </div>
+                  <button
+                    v-if="activeRow.assetEntries.length"
+                    class="btn ghost sm lineage-btn"
+                    type="button"
+                    @click="lineageModalRowId = activeRow.idKey"
+                  >
+                    查看血缘
+                  </button>
                 </div>
                 <p v-else class="pending-text">影响范围接口待完善。</p>
               </section>
@@ -252,46 +274,9 @@
                 <p>{{ activeRow.ticket.business_note }}</p>
               </section>
 
-              <section class="doc-section">
-                <h4>建议处理动作</h4>
-                <ol v-if="activeRow.mustDo.length" class="doc-list">
-                  <li v-for="item in activeRow.mustDo" :key="item">{{ item }}</li>
-                </ol>
-                <p v-else class="pending-text">must_do 接口待完善。</p>
-              </section>
-
-              <section v-if="activeRow.mustConfirm.length" class="doc-section">
-                <h4>待确认问题</h4>
-                <ol class="doc-list">
-                  <li v-for="item in activeRow.mustConfirm" :key="item">{{ item }}</li>
-                </ol>
-              </section>
-
-              <section class="doc-section">
-                <h4>验收标准</h4>
-                <ol v-if="activeRow.acceptance.length" class="doc-list">
-                  <li v-for="item in activeRow.acceptance" :key="item">{{ item }}</li>
-                </ol>
-                <p v-else class="pending-text">acceptance_criteria_structured 接口待完善。</p>
-              </section>
-
-              <section class="doc-section">
-                <h4>关联与依赖</h4>
-                <table class="detail-table dependency-table">
-                  <thead>
-                    <tr><th>类型</th><th>关联对象</th><th>关系</th></tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="row in relatedRows(activeRow)" :key="row.idKey">
-                      <td>{{ row.typeLabel }}</td>
-                      <td>TK-{{ row.ticket.id ?? row.index + 1 }} · {{ row.summary }}</td>
-                      <td>{{ row.ticket.depends_on_lineage ? "前置" : "并行" }}</td>
-                    </tr>
-                    <tr v-if="!relatedRows(activeRow).length">
-                      <td colspan="3">暂无其他子单依赖。</td>
-                    </tr>
-                  </tbody>
-                </table>
+              <section v-if="activeRow.ticket.id" class="doc-section sql-section">
+                <h4>参考 SQL</h4>
+                <ReferenceSqlCard :key="activeRow.ticket.id" :ticket-id="activeRow.ticket.id" />
               </section>
 
               <section class="doc-section">
@@ -301,8 +286,61 @@
             </div>
           </article>
         </div>
+        <div v-else class="audit-stage-hint">
+          完成业务勾选后，点击上方 <strong>3 拆分子单 · 派发</strong> 查看系统子单和工单详情。
+        </div>
       </section>
     </template>
+
+    <div
+      v-if="lineageModalRow"
+      class="ticket-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="血缘明细"
+      @click.self="lineageModalRowId = null"
+    >
+      <article class="ticket-detail-modal lineage-modal">
+        <header class="dr-head">
+          <div class="row row1">
+            <TypeChip :label="lineageModalRow.typeLabel" :tone="lineageModalRow.typeTone" />
+            <span class="tag outline mono">{{ priorityLabel(lineageModalRow) }}</span>
+            <span class="modal-spacer"></span>
+            <button class="close" type="button" aria-label="关闭" @click="lineageModalRowId = null">×</button>
+          </div>
+          <h2>{{ lineageModalRow.summary }}</h2>
+          <div class="summary">完整展示该子单关联的报送项、字段和血缘角色，便于需要时追溯。</div>
+        </header>
+        <div class="dr-body">
+          <section class="dr-section">
+            <h4>血缘明细</h4>
+            <table class="detail-table asset-table">
+              <thead>
+                <tr>
+                  <th>类型</th>
+                  <th>编码</th>
+                  <th>中文名</th>
+                  <th>角色</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template v-for="entry in lineageModalRow.assetEntries" :key="entry.key">
+                  <tr v-for="value in entry.values" :key="entry.key + value.code + value.name">
+                    <td>{{ entry.key }}</td>
+                    <td><code>{{ value.code || value.name }}</code></td>
+                    <td>{{ value.name || "中文名接口待完善" }}</td>
+                    <td>{{ value.role || "-" }}</td>
+                  </tr>
+                  <tr v-if="entry.hiddenCount" :key="entry.key + '-hidden'" class="note-row">
+                    <td colspan="4">还有 {{ entry.hiddenCount }} 条 {{ entry.key }} 未在工单正文展开。</td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </article>
+    </div>
   </div>
 </template>
 
@@ -321,7 +359,9 @@ import {
 } from "lucide-vue-next";
 import ExecutionPlanCard from "@/components/ExecutionPlanCard.vue";
 import ImpactScopeReview from "@/components/ImpactScopeReview.vue";
+import ReferenceSqlCard from "@/components/ReferenceSqlCard.vue";
 import type { TaskWorkflow, TicketDraft } from "@/types/api";
+import { formatReadableEvidence, normalizeEvidenceText, shortenText, type EvidenceSegment, type ReadableEvidenceRow } from "@/utils/evidence";
 
 const props = defineProps<{
   workflow: TaskWorkflow | null;
@@ -357,6 +397,17 @@ interface AssetEntry {
   note: string;
 }
 
+interface RegulatorySummaryItem {
+  key: string;
+  label: string;
+  rows: ReadableEvidenceRow[];
+}
+
+interface ScopeField {
+  code: string;
+  name: string;
+}
+
 interface TicketRow {
   ticket: TicketDraft;
   idKey: string;
@@ -377,6 +428,7 @@ interface TicketRow {
   evidence: EvidenceRef[];
   history: HistoryCase[];
   assetEntries: AssetEntry[];
+  scopeFields: ScopeField[];
   qualityScore: number;
   qualityFlags: string[];
 }
@@ -393,6 +445,8 @@ interface TicketTypeGroup {
 const activeTab = ref<"plan" | "audit">("plan");
 const openId = ref<string | null>(null);
 const collapsedTypeGroups = ref<Set<string>>(new Set());
+const lineageModalRowId = ref<string | null>(null);
+const auditStage = ref<2 | 3>(2);
 
 const tickets = computed(() => props.workflow?.ticket_drafts ?? []);
 const parentTickets = computed(() => tickets.value.filter((ticket) => ticket.ticket_role === "PARENT"));
@@ -405,6 +459,7 @@ const childRows = computed<TicketRow[]>(() =>
 
 const selectedRow = computed(() => childRows.value.find((row) => row.idKey === openId.value) ?? null);
 const activeRow = computed(() => selectedRow.value ?? childRows.value[0] ?? null);
+const lineageModalRow = computed(() => childRows.value.find((row) => row.idKey === lineageModalRowId.value) ?? null);
 const blockedRows = computed(() => childRows.value.filter((row) => row.blockers.length > 0));
 const ticketTypeGroups = computed<TicketTypeGroup[]>(() => {
   const groups = new Map<string, TicketRow[]>();
@@ -447,7 +502,7 @@ const documentRef = computed(() => {
 });
 const parentChangeType = computed(() => parentTicket.value?.change_ticket_type ?? "");
 const severitySignals = computed(() => textArray(parentTicket.value?.severity_signals));
-const regulatorySummaryItems = computed(() => buildRegulatorySummaryItems(props.workflow, parentTicket.value, activeRow.value?.ticket ?? null));
+const regulatorySummaryItems = computed(() => buildRegulatorySummaryItems(props.workflow, parentTicket.value, activeRow.value));
 const parentSeverity = computed(() => {
   const level = parentTicket.value?.severity_level || "L?";
   const score = parentTicket.value?.severity_score ?? 0;
@@ -464,14 +519,34 @@ function onRegenerate(): void {
   if (ok) emit("generate");
 }
 
+function onImpactReviewConfirmed(): void {
+  auditStage.value = 3;
+  emit("impact-review-confirmed");
+}
+
 function priorityLabel(row: TicketRow): string {
   if (row.blockers.length) return "P0";
   if (row.ticket.business_signoff_required || row.mustConfirm.length) return "P1";
   return row.qualityScore > 0 && row.qualityScore < 80 ? "P1" : "P2";
 }
 
-function relatedRows(row: TicketRow): TicketRow[] {
-  return childRows.value.filter((item) => item.idKey !== row.idKey).slice(0, 5);
+function revisionClass(operation: NonNullable<EvidenceSegment["operation"]>): string {
+  return {
+    ADD: "reg-revision-add",
+    DELETE: "reg-revision-delete",
+    MODIFY: "reg-revision-modify",
+    ADJUST: "reg-revision-modify",
+  }[operation];
+}
+
+function revisionSegmentTitle(segment: EvidenceSegment): string {
+  const action = {
+    ADD: "新增",
+    DELETE: "删除",
+    MODIFY: "修改",
+    ADJUST: "调整",
+  }[segment.operation ?? "ADJUST"];
+  return [action, segment.author || "未知作者", segment.date || "日期未知"].join(" · ");
 }
 
 function isTypeGroupCollapsed(key: string): boolean {
@@ -509,6 +584,7 @@ function normalizeTicket(ticket: TicketDraft, index: number): TicketRow {
     evidence: evidenceRefs(ticket.evidence_refs),
     history: historyCases(ticket.historical_cases),
     assetEntries: assetEntries(ticket.affected_assets),
+    scopeFields: scopeFields(ticket.affected_assets),
     qualityScore: ticket.quality_score || 0,
     qualityFlags: textArray(ticket.quality_flags),
   };
@@ -521,35 +597,61 @@ function firstContentLine(value: string): string {
     .find(Boolean) ?? "";
 }
 
-function buildRegulatorySummaryItems(workflow: TaskWorkflow | null, parent: TicketDraft | null, active: TicketDraft | null): string[] {
-  const items: string[] = [];
-  for (const signal of workflow?.document_profile?.change_signals ?? []) {
-    const evidence = cleanRegulatoryEvidence(signal.evidence_text);
-    if (!evidence) continue;
+function buildRegulatorySummaryItems(workflow: TaskWorkflow | null, parent: TicketDraft | null, active: TicketRow | null): RegulatorySummaryItem[] {
+  const relatedScope = active ? ticketScope(active.ticket) : null;
+  const hasStructuredEvidence = Boolean(
+    workflow?.document_profile?.change_signals?.length || workflow?.reporting_candidates?.length,
+  );
+  const items: RegulatorySummaryItem[] = [];
+  const signals = workflow?.document_profile?.change_signals ?? [];
+  const hasDirectSignalMatch = Boolean(
+    relatedScope && signals.some((signal) => isDirectChangeSignalMatch(signal, relatedScope.itemCodes)),
+  );
+  for (const signal of signals) {
+    const documentContextSignal = isDocumentLevelRevisionSignal(signal);
+    if (relatedScope) {
+      const related = hasDirectSignalMatch
+        ? isDirectChangeSignalMatch(signal, relatedScope.itemCodes)
+        : isRelatedChangeSignal(signal, relatedScope);
+      if (!related && !documentContextSignal) continue;
+    }
     const label = [signal.table_code, signal.indicator_hint].map((item) => item.trim()).filter(Boolean).join(" · ");
-    items.push(label ? `${label}：${evidence}` : evidence);
+    const rows = formatReadableEvidence(signal.evidence_text, [], { contextualRevisions: true });
+    if (!rows.length) continue;
+    const item = { key: `signal-${items.length}-${label}`, label, rows };
+    if (documentContextSignal) items.unshift(item);
+    else items.push(item);
   }
 
   if (!items.length) {
     for (const candidate of workflow?.reporting_candidates ?? []) {
-      const evidence = cleanRegulatoryEvidence(candidate.evidence_text);
-      if (!evidence) continue;
+      if (relatedScope?.itemCodes.size && !relatedScope.itemCodes.has(normalizeScopeCode(candidate.reporting_item_code))) {
+        continue;
+      }
       const label = [candidate.reporting_object_code, candidate.reporting_item_code].map((item) => item.trim()).filter(Boolean).join(" · ");
-      items.push(label ? `${label}：${evidence}` : evidence);
+      const rows = formatReadableEvidence(candidate.evidence_text, [], { contextualRevisions: true });
+      if (!rows.length) continue;
+      items.push({ key: `candidate-${items.length}-${label}`, label, rows });
     }
   }
 
-  if (!items.length) {
-    items.push(...splitSummaryText(workflow?.document_profile?.evidence_text ?? ""));
+  if (!items.length && hasStructuredEvidence && active?.evidence.length) {
+    for (const evidence of active.evidence) {
+      const rows = formatReadableEvidence(evidence.text, [], { contextualRevisions: true });
+      if (rows.length) items.push({ key: `active-evidence-${items.length}`, label: evidence.src, rows });
+    }
+  }
+  if (!items.length && !hasStructuredEvidence) {
+    items.push(...summaryTextItems(splitSummaryText(workflow?.document_profile?.evidence_text ?? "")));
+  }
+  if (!items.length && !hasStructuredEvidence) {
+    items.push(...summaryTextItems(splitSummaryText(workflow?.document_profile?.reason ?? "")));
   }
   if (!items.length) {
-    items.push(...splitSummaryText(workflow?.document_profile?.reason ?? ""));
-  }
-  if (!items.length) {
-    items.push(...splitSummaryText(parent?.summary || parent?.content || active?.content || ""));
+    items.push(...summaryTextItems(splitSummaryText(active?.ticket.content || active?.ticket.summary || parent?.summary || parent?.content || "")));
   }
 
-  return uniqueSummaryItems(items).slice(0, 6);
+  return uniqueSummaryItems(items).slice(0, 4);
 }
 
 function splitSummaryText(value: string): string[] {
@@ -561,17 +663,103 @@ function splitSummaryText(value: string): string[] {
     .filter(Boolean);
 }
 
-function uniqueSummaryItems(items: string[]): string[] {
-  const seen = new Set<string>();
-  const unique: string[] = [];
+function summaryTextItems(items: string[]): RegulatorySummaryItem[] {
+  return items.map((item, index) => ({
+    key: `fallback-${index}-${item}`,
+    label: "",
+    rows: formatReadableEvidence(item),
+  })).filter((item) => item.rows.length);
+}
+
+function uniqueSummaryItems(items: RegulatorySummaryItem[]): RegulatorySummaryItem[] {
+  const unique: RegulatorySummaryItem[] = [];
   for (const item of items) {
-    const cleaned = shortenSummary(cleanRegulatoryEvidence(item));
-    const key = cleaned.replace(/\s+/g, "");
-    if (!cleaned || seen.has(key)) continue;
-    seen.add(key);
-    unique.push(cleaned);
+    const cleaned = itemSummaryText(item);
+    if (!cleaned) continue;
+    const existing = unique.find((candidate) => areOverlappingSummaryItems(candidate, item));
+    if (existing) {
+      existing.label = mergeSummaryLabels(existing.label, item.label);
+      existing.rows = mergeEvidenceRows(existing.rows, item.rows);
+      continue;
+    }
+    unique.push(item);
   }
   return unique;
+}
+
+function itemSummaryText(item: RegulatorySummaryItem): string {
+  return normalizeScopeCode(item.rows.map((row) => row.text).join("；"));
+}
+
+function areOverlappingSummaryItems(left: RegulatorySummaryItem, right: RegulatorySummaryItem): boolean {
+  const a = itemSummaryText(left);
+  const b = itemSummaryText(right);
+  if (!a || !b) return false;
+  if (a === b || a.includes(b) || b.includes(a)) return true;
+  const common = longestCommonSubstringLength(a, b);
+  return common >= Math.min(80, Math.floor(Math.min(a.length, b.length) * 0.45));
+}
+
+function longestCommonSubstringLength(a: string, b: string): number {
+  const previous = new Array(b.length + 1).fill(0);
+  let best = 0;
+  for (let i = 1; i <= a.length; i += 1) {
+    let diagonal = 0;
+    for (let j = 1; j <= b.length; j += 1) {
+      const old = previous[j];
+      previous[j] = a[i - 1] === b[j - 1] ? diagonal + 1 : 0;
+      if (previous[j] > best) best = previous[j];
+      diagonal = old;
+    }
+  }
+  return best;
+}
+
+function mergeSummaryLabels(left: string, right: string): string {
+  const labels = [...left.split(" / "), ...right.split(" / ")]
+    .map((label) => label.trim())
+    .filter(Boolean);
+  return Array.from(new Set(labels)).join(" / ");
+}
+
+function mergeEvidenceRows(left: ReadableEvidenceRow[], right: ReadableEvidenceRow[]): ReadableEvidenceRow[] {
+  const rows = [...left];
+  for (const row of right) {
+    const text = normalizeScopeCode(row.text);
+    const existing = rows.find((candidate) => {
+      const candidateText = normalizeScopeCode(candidate.text);
+      if (candidateText === text) return true;
+      if (candidate.hasRevisionMarks && row.hasRevisionMarks) {
+        const common = longestCommonSubstringLength(candidateText, text);
+        const threshold = Math.min(80, Math.floor(Math.min(candidateText.length, text.length) * 0.6));
+        return candidateText.includes(text) || text.includes(candidateText) || common >= threshold;
+      }
+      return candidateText.includes(text) || text.includes(candidateText);
+    });
+    if (!existing) rows.push(row);
+    else if (!existing.hasRevisionMarks && row.hasRevisionMarks) {
+      const index = rows.indexOf(existing);
+      rows[index] = row;
+    } else if (
+      existing.hasRevisionMarks
+      && row.hasRevisionMarks
+      && text.length > normalizeScopeCode(existing.text).length
+      && sameRevisionOperationSet(existing, row)
+    ) {
+      const index = rows.indexOf(existing);
+      rows[index] = row;
+    } else if (existing.hasRevisionMarks && row.hasRevisionMarks && !sameRevisionOperationSet(existing, row)) {
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function sameRevisionOperationSet(left: ReadableEvidenceRow, right: ReadableEvidenceRow): boolean {
+  const leftOps = new Set(left.segments.map((segment) => segment.operation).filter(Boolean));
+  const rightOps = new Set(right.segments.map((segment) => segment.operation).filter(Boolean));
+  if (leftOps.size !== rightOps.size) return false;
+  return [...leftOps].every((operation) => rightOps.has(operation));
 }
 
 function cleanedTicketContent(value: string): string {
@@ -586,27 +774,14 @@ function cleanRegulatoryEvidence(value: string): string {
   const leadingMarker = value.match(/^\s*[-*]?\s*\[\s*(新增|删除|修改|调整)\s*\|[^\]]+\]\s*/);
   const markerPrefix = leadingMarker ? `${leadingMarker[1]}：` : "";
   const withoutLeading = leadingMarker ? value.slice(leadingMarker[0].length) : value;
-  return `${markerPrefix}${withoutLeading}`
+  return normalizeEvidenceText(`${markerPrefix}${withoutLeading}`
     .replace(/^\s{0,3}#{1,6}\s*/g, "")
     .replace(/^\s*[-*]\s+/g, "")
-    .replace(/\s*\[\s*(?:新增|删除|修改|调整)\s*\|[^\]]+\]\s*/g, "")
-    .replace(/\s+/g, " ")
-    .replace(/：；/g, "：")
-    .replace(/；{2,}/g, "；")
-    .trim();
+    .replace(/\s*\[\s*(?:新增|删除|修改|调整)\s*\|[^\]]+\]\s*/g, ""));
 }
 
 function shortenSummary(value: string, maxLength = 180): string {
-  if (value.length <= maxLength) return value;
-  const head = value.slice(0, maxLength);
-  const punctuationIndex = Math.max(
-    head.lastIndexOf("。"),
-    head.lastIndexOf("；"),
-    head.lastIndexOf("，"),
-    head.lastIndexOf(","),
-  );
-  const end = punctuationIndex >= 80 ? punctuationIndex + 1 : maxLength;
-  return `${head.slice(0, end).trim()}...`;
+  return shortenText(value, maxLength);
 }
 
 function parseJson(value: string | null | undefined): unknown {
@@ -618,6 +793,114 @@ function parseJson(value: string | null | undefined): unknown {
   } catch {
     return trimmed;
   }
+}
+
+function ticketScope(ticket: TicketDraft): { itemCodes: Set<string>; fieldCodes: Set<string>; terms: string[] } {
+  const itemCodes = new Set(textArray(ticket.related_impact_codes).map(normalizeScopeCode).filter(Boolean));
+  const fieldCodes = new Set<string>();
+  const terms: string[] = [];
+  const parsed = parseJson(ticket.affected_assets);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    for (const [key, raw] of Object.entries(parsed as Record<string, unknown>)) {
+      const normalizedKey = normalizeAssetKey(key);
+      const values = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      for (const value of values) {
+        const asset = assetValue(normalizedKey, value);
+        if (!asset.code && !asset.name) continue;
+        if (isReportingItemKey(normalizedKey)) {
+          const itemCode = normalizeScopeCode(asset.code);
+          if (itemCode) itemCodes.add(itemCode);
+        }
+        if (isFieldKey(normalizedKey)) {
+          const fieldCode = normalizeScopeCode(asset.code);
+          if (fieldCode) fieldCodes.add(fieldCode);
+        }
+        terms.push(asset.code, asset.name);
+      }
+    }
+  }
+  terms.push(ticket.summary, ticket.title);
+  return {
+    itemCodes,
+    fieldCodes,
+    terms: uniqueScopeTerms(terms),
+  };
+}
+
+function isRelatedChangeSignal(
+  signal: NonNullable<TaskWorkflow["document_profile"]>["change_signals"][number],
+  scope: { itemCodes: Set<string>; fieldCodes: Set<string>; terms: string[] },
+): boolean {
+  const signalItemCodes = new Set<string>();
+  const matchedItem = normalizeScopeCode(signal.matched_item_code ?? "");
+  if (matchedItem) signalItemCodes.add(matchedItem);
+  for (const code of signal.composite_match?.reporting_item_codes ?? []) {
+    const normalized = normalizeScopeCode(code);
+    if (normalized) signalItemCodes.add(normalized);
+  }
+  if ([...signalItemCodes].some((code) => scope.itemCodes.has(code))) return true;
+
+  const signalFieldCodes = new Set<string>();
+  for (const code of signal.composite_match?.measure_field_codes ?? []) {
+    const normalized = normalizeScopeCode(code);
+    if (normalized) signalFieldCodes.add(normalized);
+  }
+  for (const code of signal.composite_match?.condition_field_codes ?? []) {
+    const normalized = normalizeScopeCode(code);
+    if (normalized) signalFieldCodes.add(normalized);
+  }
+  for (const field of signal.composite_match?.measure_fields ?? []) {
+    const normalized = normalizeScopeCode(field.field_code);
+    if (normalized) signalFieldCodes.add(normalized);
+  }
+  for (const condition of signal.composite_match?.conditions ?? signal.composite_match?.filter_conditions ?? []) {
+    const normalized = normalizeScopeCode(condition.field_code);
+    if (normalized) signalFieldCodes.add(normalized);
+  }
+  if ([...signalFieldCodes].some((code) => scope.fieldCodes.has(code))) return true;
+
+  const haystack = [
+    signal.table_code,
+    signal.section_hint,
+    signal.indicator_hint,
+    signal.evidence_text,
+    signal.composite_match?.indicator_hint,
+    signal.composite_match?.measure_phrase,
+    signal.composite_match?.condition_phrase,
+    signal.composite_match?.evidence_text,
+  ].map(normalizeScopeCode).join(" ");
+  return scope.terms.some((term) => term && haystack.includes(normalizeScopeCode(term)));
+}
+
+function isDirectChangeSignalMatch(
+  signal: NonNullable<TaskWorkflow["document_profile"]>["change_signals"][number],
+  itemCodes: Set<string>,
+): boolean {
+  const matchedItem = normalizeScopeCode(signal.matched_item_code ?? "");
+  return Boolean(matchedItem && itemCodes.has(matchedItem));
+}
+
+function isDocumentLevelRevisionSignal(
+  signal: NonNullable<TaskWorkflow["document_profile"]>["change_signals"][number],
+): boolean {
+  const hint = `${signal.section_hint} ${signal.indicator_hint}`;
+  return /填报机构|机构范围|一般说明/.test(hint) && /\[\s*(?:新增|删除|修改|调整)\s*\|/.test(signal.evidence_text);
+}
+
+function uniqueScopeTerms(values: string[]): string[] {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const value of values) {
+    const normalized = normalizeScopeCode(value);
+    if (!normalized || normalized.length < 2 || seen.has(normalized)) continue;
+    seen.add(normalized);
+    terms.push(value.trim());
+  }
+  return terms;
+}
+
+function normalizeScopeCode(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, "");
 }
 
 function textArray(value: string | null | undefined): string[] {
@@ -634,6 +917,23 @@ function textArray(value: string | null | undefined): string[] {
   }
   if (typeof parsed === "string" && parsed && parsed !== "[]" && parsed !== "{}") return [parsed];
   return [];
+}
+
+function scopeFields(value: string): ScopeField[] {
+  const entries = assetEntries(value);
+  const fields = entries
+    .filter((entry) => isFieldLabel(entry.key))
+    .flatMap((entry) => entry.values)
+    .filter((value) => value.code || value.name);
+  const seen = new Set<string>();
+  const result: ScopeField[] = [];
+  for (const field of fields) {
+    const key = field.code || field.name;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push({ code: field.code || field.name, name: field.name });
+  }
+  return result;
 }
 
 function evidenceRefs(value: string): EvidenceRef[] {
@@ -681,11 +981,10 @@ function assetEntries(value: string): AssetEntry[] {
       const values = Array.isArray(raw)
         ? raw.map((item) => assetValue(normalizedKey, item)).filter((item) => item.code || item.name)
         : raw ? [assetValue(normalizedKey, raw)].filter((item) => item.code || item.name) : [];
-      const visibleLimit = normalizedKey === "SOURCE_FIELDS" ? 4 : values.length;
       return {
         key: assetLabel(normalizedKey),
-        values: values.slice(0, visibleLimit),
-        hiddenCount: Math.max(values.length - visibleLimit, 0),
+        values,
+        hiddenCount: 0,
         note: assetNote(normalizedKey, values),
       };
     })
@@ -708,6 +1007,32 @@ const ASSET_LABELS: Record<string, string> = {
   LINEAGE_ROLE: "血缘角色",
   LINEAGE_ROLES: "血缘角色",
 };
+
+function isReportingItemKey(value: string): boolean {
+  return [
+    "REPORTING_ITEM",
+    "REPORTING_ITEMS",
+    "REPORTING_ITEM_CODE",
+    "REPORTING_ITEM_CODES",
+  ].includes(normalizeAssetKey(value));
+}
+
+function isFieldKey(value: string): boolean {
+  return [
+    "REPORTING_FIELD",
+    "REPORTING_FIELDS",
+    "REPORTING_FIELD_CODE",
+    "REPORTING_FIELD_CODES",
+    "SOURCE_FIELD",
+    "SOURCE_FIELDS",
+    "SOURCE_FIELD_CODE",
+    "SOURCE_FIELD_CODES",
+  ].includes(normalizeAssetKey(value));
+}
+
+function isFieldLabel(value: string): boolean {
+  return ["报送字段", "源字段"].includes(value);
+}
 
 const LINEAGE_ROLE_LABELS: Record<string, string> = {
   REPORT_FIELD: "报送结果字段",
@@ -1047,6 +1372,18 @@ const TypeChip = defineComponent({
 .ai-plan-foot { display: flex; gap: 8px; align-items: center; color: var(--ink-500); font-size: 12px; border-top: 1px dashed var(--border); padding-top: 12px; }
 
 .audit-panel { display: flex; flex-direction: column; gap: 12px; }
+.audit-stage-hint {
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: var(--ink-600);
+  font-size: 12.5px;
+  line-height: 1.7;
+  padding: 14px 16px;
+}
+.audit-stage-hint strong {
+  color: var(--ink-900);
+}
 .ticket-grid {
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
@@ -1245,6 +1582,8 @@ const TypeChip = defineComponent({
   border-bottom: 1px solid var(--border);
 }
 .doc-section:last-child { border-bottom: none; }
+.sql-section { padding: 16px 0; }
+.sql-section h4 { padding: 0 20px 9px; }
 .doc-section h4 {
   margin: 0 0 9px;
   color: var(--ink-700);
@@ -1267,16 +1606,140 @@ const TypeChip = defineComponent({
   font-size: 11.5px;
   font-weight: 700;
 }
-.reg-summary-list {
-  padding-left: 20px;
+.reg-evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
-.reg-summary-list li {
-  padding-left: 2px;
+.reg-evidence-card {
+  border-left: 3px solid var(--orange-500);
+  background: var(--surface-alt);
+  border-radius: 6px;
+  padding: 11px 13px;
+  overflow: hidden;
+}
+.reg-evidence-label {
+  margin-bottom: 8px;
+  color: var(--ink-500);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.reg-evidence-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 0;
+  border-top: 1px dashed var(--border);
+}
+.reg-evidence-label + .reg-evidence-row {
+  border-top: none;
+  padding-top: 0;
+}
+.reg-evidence-row:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.reg-evidence-row:last-child {
+  padding-bottom: 0;
+}
+.reg-evidence-meta {
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 5px;
+  background: #fff1e9;
+  color: #8f2f10;
+  padding: 3px 7px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.reg-evidence-body {
+  color: var(--ink-800);
+  font-size: 13px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.reg-evidence-highlight {
+  border-radius: 4px;
+  background: #ffe0d2;
+  color: #8f2f10;
+  padding: 0 3px;
+  font-weight: 700;
+}
+.reg-revision-mark {
+  border-radius: 4px;
+  padding: 0 3px;
+  font-weight: 750;
+  cursor: help;
+}
+.reg-revision-add {
+  background: #dcfce7;
+  color: #166534;
+}
+.reg-revision-delete {
+  background: #fee2e2;
+  color: #991b1b;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+.reg-revision-modify {
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 .asset-chip-group {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.impact-scope-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  justify-content: space-between;
+}
+.scope-field-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.scope-field {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.scope-field code {
+  display: inline-block;
+  max-width: 100%;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 7px;
+  color: var(--ink-800);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.scope-field-name {
+  color: var(--ink-700);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.scope-field-name.pending {
+  color: var(--ink-500);
+}
+.lineage-btn {
+  flex-shrink: 0;
+}
+.lineage-modal .detail-table code {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .doc-list {
   margin: 0;
@@ -1286,10 +1749,6 @@ const TypeChip = defineComponent({
   line-height: 1.75;
 }
 .doc-list li + li { margin-top: 4px; }
-.dependency-table th:nth-child(1),
-.dependency-table td:nth-child(1) { width: 110px; }
-.dependency-table th:nth-child(3),
-.dependency-table td:nth-child(3) { width: 86px; }
 .tv2-filterbar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 2px;
 }

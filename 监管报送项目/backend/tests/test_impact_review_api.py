@@ -32,6 +32,16 @@ def _create_analyzed_g24_task(client: TestClient) -> int:
 
 
 def test_impact_review_save_confirm_generates_system_tickets():
+    """新分桶规则：影响范围按真实 system_code（data_system_catalog）拆。
+
+    G24 lineage 跨 4 个真实系统：
+      - RPT             报送集市（rpt_g24.*）
+      - DM_TREASURY     资金同业数据集市（dm_interbank_position.*）
+      - INTERBANK_CORE  同业业务系统（interbank_deal.*）
+      - COUNTERPARTY_MDM 交易对手主数据（counterparty.*）
+
+    每个具体系统单独成桶/单，owner_team 走 data_system_catalog 登记的团队。
+    """
     client = TestClient(app)
     task_id = _create_analyzed_g24_task(client)
 
@@ -44,23 +54,23 @@ def test_impact_review_save_confirm_generates_system_tickets():
     review = payload["review"]
     item = review["items"][0]
     item["business_note"] = "修正口径优先排产，历史数据由 ETL 团队补录。"
-    allowed_systems = {system["responsible_system"] for system in item["systems"]}
-    assert allowed_systems <= {
-        "REG_REPORTING_SYSTEM",
-        "DATA_GOVERNANCE_PLATFORM",
-        "DATA_MART_ETL",
-        "SOURCE_SYSTEM",
-        "DATA_QUALITY_PLATFORM",
-        "TEST_ACCEPTANCE",
-        "KNOWLEDGE_ARCHIVE",
-    }
 
-    etl_system = next(system for system in item["systems"] if system["responsible_system"] == "DATA_MART_ETL")
-    etl_system["fields"].append(
+    # G24 应该按真实 system_code 分桶
+    real_systems = {system["responsible_system"] for system in item["systems"]}
+    assert {"RPT", "DM_TREASURY", "INTERBANK_CORE", "COUNTERPARTY_MDM"} <= real_systems
+
+    # 报送集市桶里展示名应该是 system_name 而不是抽象团队角色
+    rpt_system = next(s for s in item["systems"] if s["responsible_system"] == "RPT")
+    assert rpt_system["responsible_system_zh"] == "监管报送系统"
+    assert rpt_system["system_type"] == "REPORTING"
+
+    # 估值/源系统桶手工追加一个业务字段
+    interbank_system = next(s for s in item["systems"] if s["responsible_system"] == "INTERBANK_CORE")
+    interbank_system["fields"].append(
         {
-            "field_code": "manual.etl_override_field",
+            "field_code": "interbank_deal.manual_override",
             "field_name": "业务补充字段",
-            "lineage_role": "DERIVED_FIELD",
+            "lineage_role": "SOURCE_FIELD",
             "source": "BUSINESS",
             "selected": True,
             "edited": False,
@@ -68,8 +78,9 @@ def test_impact_review_save_confirm_generates_system_tickets():
             "is_required": False,
         }
     )
-    source_system = next(system for system in item["systems"] if system["responsible_system"] == "SOURCE_SYSTEM")
-    source_system["fields"][0]["selected"] = False
+    # 把对手方桶里第一条字段反选，验证 selected=False 不进工单
+    counterparty_system = next(s for s in item["systems"] if s["responsible_system"] == "COUNTERPARTY_MDM")
+    counterparty_system["fields"][0]["selected"] = False
 
     save_response = client.put(f"/api/tasks/{task_id}/impact-review", json={"review": review})
     assert save_response.status_code == 200
@@ -80,16 +91,25 @@ def test_impact_review_save_confirm_generates_system_tickets():
     ticket_payload = confirm_response.json()
     children = ticket_payload["children"]
     systems = {child["responsible_system"] for child in children}
-    assert {"DATA_MART_ETL", "SOURCE_SYSTEM", "TEST_ACCEPTANCE", "KNOWLEDGE_ARCHIVE"} <= systems
+    # 每个真实系统都生成一张子单 + 两张支持单（TEST_ACCEPTANCE/KNOWLEDGE_ARCHIVE）
+    assert {"RPT", "DM_TREASURY", "INTERBANK_CORE", "COUNTERPARTY_MDM"} <= systems
+    assert {"TEST_ACCEPTANCE", "KNOWLEDGE_ARCHIVE"} <= systems
 
-    etl_child = next(child for child in children if child["responsible_system"] == "DATA_MART_ETL")
-    assert "修正口径优先排产" in etl_child["business_note"]
-    assert "manual.etl_override_field" in etl_child["affected_assets"]
-    assert etl_child["must_do"] != "[]"
-    assert etl_child["quality_score"] > 0
+    # 同业源系统子单要含业务补充字段、业务备注，且 action_type 是 SOURCE_SYSTEM_CHANGE
+    interbank_child = next(child for child in children if child["responsible_system"] == "INTERBANK_CORE")
+    assert "修正口径优先排产" in interbank_child["business_note"]
+    assert "interbank_deal.manual_override" in interbank_child["affected_assets"]
+    assert interbank_child["action_ticket_type"] == "SOURCE_SYSTEM_CHANGE"
+    assert interbank_child["must_do"] != "[]"
+    assert interbank_child["quality_score"] > 0
+
+    # RPT 集市是 REPORTING 类型，应该走 REPORT_PROCESSING
+    rpt_child = next(child for child in children if child["responsible_system"] == "RPT")
+    assert rpt_child["action_ticket_type"] == "REPORT_PROCESSING"
 
     workflow_response = client.get(f"/api/tasks/{task_id}/workflow")
     assert workflow_response.status_code == 200
     workflow_ticket_systems = {ticket["responsible_system"] for ticket in workflow_response.json()["ticket_drafts"]}
-    assert "DATA_MART_ETL" in workflow_ticket_systems
+    assert "RPT" in workflow_ticket_systems
+    assert "INTERBANK_CORE" in workflow_ticket_systems
     assert workflow_response.json()["task"]["status"] == "TICKET_GENERATED"

@@ -1,4 +1,5 @@
 import json
+from typing import Iterator
 
 import httpx
 
@@ -51,6 +52,55 @@ def _complete_json_with_model(messages: list[dict[str, str]], model: str) -> tup
         return json.loads(content), raw, model
     except (KeyError, IndexError, json.JSONDecodeError, TypeError) as exc:
         raise LLMClientError("LLM response is not valid JSON") from exc
+
+
+def stream_text(messages: list[dict[str, str]], model: str | None = None) -> Iterator[str]:
+    """流式调用 LLM，逐 token yield 文本片段。
+
+    使用 OpenAI 兼容的 stream=True 协议，解析 SSE data 行。
+    遇到网络/协议错误时抛 LLMClientError。
+    """
+    settings = get_settings()
+    if not settings.llm_api_base or not settings.llm_api_key:
+        raise LLMClientError("LLM API base or key is not configured")
+
+    selected_model = model or settings.llm_model
+    base_url = settings.llm_api_base.rstrip("/")
+    payload = {
+        "model": selected_model,
+        "messages": messages,
+        "stream": True,
+    }
+
+    try:
+        with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
+            with client.stream(
+                "POST",
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.llm_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    chunk_str = line[6:]
+                    if chunk_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(chunk_str)
+                        delta = chunk["choices"][0]["delta"]
+                        content = delta.get("content") or ""
+                        if content:
+                            yield content
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
+    except httpx.HTTPError as exc:
+        raise LLMClientError(f"LLM stream request failed: {exc}") from exc
 
 
 # ── Embedding ────────────────────────────────────────────────────────────

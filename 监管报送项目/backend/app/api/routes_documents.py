@@ -852,6 +852,9 @@ def _triplet_storage_paths(document: RegDocument) -> list[Path]:
 
 
 def _is_revision_table_path(path: Path) -> bool:
+    # 修订对照表只能是 Excel 格式；纯文本文件即便文件名含 revision 也不是对照表
+    if path.suffix.lower() not in {".xls", ".xlsx"}:
+        return False
     lower = path.name.lower()
     return "修订" in path.name or "revision" in lower
 
@@ -934,7 +937,8 @@ def _original_filename_from_storage_path(path: Path) -> str:
 def _infer_raw_file_role(filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     lower = filename.lower()
-    if "修订" in filename or "revision" in lower:
+    # 修订对照表只可能是 Excel 文件；txt/pdf 等普通发文即便文件名含 revision 也不是对照表
+    if suffix in {".xls", ".xlsx"} and ("修订" in filename or "revision" in lower):
         return "revision_table"
     if suffix in {".doc", ".docx"}:
         return "instruction"
@@ -1087,7 +1091,8 @@ def _build_triplet_revision_raw_text(document: RegDocument) -> str:
     paths = [
         Path(path)
         for path in (document.storage_path or "").split(";")
-        if path and ("修订" in Path(path).name or "revision" in Path(path).name.lower())
+        if path and Path(path).suffix.lower() in {".xls", ".xlsx"}
+        and ("修订" in Path(path).name or "revision" in Path(path).name.lower())
     ]
     entries = []
     for path in paths:

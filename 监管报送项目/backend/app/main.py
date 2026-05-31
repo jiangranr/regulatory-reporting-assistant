@@ -7,6 +7,7 @@ from app.api import (
     routes_documents,
     routes_extraction,
     routes_health,
+    routes_indicator_qa,
     routes_reporting,
     routes_rule_cards,
     routes_tasks,
@@ -29,6 +30,7 @@ def create_app() -> FastAPI:
     api.include_router(routes_health.router)
     api.include_router(routes_documents.router)
     api.include_router(routes_reporting.router)
+    api.include_router(routes_indicator_qa.router)
     api.include_router(routes_tasks.router)
     api.include_router(routes_tasks.ticket_router)
     api.include_router(routes_catalog.router)

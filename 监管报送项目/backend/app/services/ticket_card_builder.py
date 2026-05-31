@@ -9,7 +9,10 @@ class TicketTaskCard(BaseModel):
     action_type: ActionTicketType
     owner_role: ResponsibleRole
     executor_role: ResponsibleRole
-    responsible_system: ResponsibleSystem
+    # 旧 trigger 路径传 ResponsibleSystem.xxx.value（字符串），新影响范围复核路径
+    # 传具体 system_code（如 "RPT_1104"/"VALUATION"）；两个都是字符串，下游
+    # 序列化/展示直接当字符串用即可。
+    responsible_system: str
     summary: str
     affected_assets: dict
     must_do: list[str]
@@ -201,7 +204,7 @@ def build_ticket_card(
         action_type=trigger.action_type,
         owner_role=spec.owner_role,
         executor_role=spec.executor_role,
-        responsible_system=trigger.responsible_system,
+        responsible_system=trigger.responsible_system.value,
         summary=spec.summary,
         affected_assets=_build_affected_assets(selected_impacts),
         must_do=spec.must_do[:5],

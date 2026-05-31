@@ -1,5 +1,7 @@
 import type { ImpactReviewResponse } from "@/types/api";
 
+// G24 影响范围复核 fixture：跨 RPT（报送集市）+ INTERBANK_CORE（同业源系统）两个真实系统。
+// 桶按真实 system_code 划分，与后端 build_baseline_from_impacts 的输出保持一致。
 export const IMPACT_REVIEW_RESPONSE = {
   status: "EDITING",
   review: {
@@ -12,8 +14,10 @@ export const IMPACT_REVIEW_RESPONSE = {
         business_note: "",
         systems: [
           {
-            responsible_system: "DATA_MART_ETL",
-            responsible_system_zh: "数据集市/ETL",
+            responsible_system: "RPT",
+            responsible_system_zh: "监管报送系统",
+            system_type: "REPORTING",
+            owner_team: "监管报送团队",
             fields: [
               {
                 field_code: "rpt_g24.interbank_borrowing_bal_top100",
@@ -28,8 +32,10 @@ export const IMPACT_REVIEW_RESPONSE = {
             ],
           },
           {
-            responsible_system: "SOURCE_SYSTEM",
-            responsible_system_zh: "业务源系统",
+            responsible_system: "INTERBANK_CORE",
+            responsible_system_zh: "同业业务系统",
+            system_type: "SOURCE",
+            owner_team: "金融市场科技团队",
             fields: [
               {
                 field_code: "interbank_deal.balance",

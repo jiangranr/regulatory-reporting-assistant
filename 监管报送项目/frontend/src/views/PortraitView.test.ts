@@ -135,6 +135,48 @@ describe("PortraitView", () => {
     expect(wrapper.find("tbody").text()).not.toContain("说明调整");
   });
 
+  it("uses cleaned evidence text for verified evidence hover titles", () => {
+    const rawEvidence = [
+      "[删除 | 陈施霖 | 2024-12-03] 投资",
+      "[新增 | 陈施霖 | 2024-11-22] [C.",
+      "[新增 | 陈施霖 | 2024-11-22] 修正久期",
+      "[新增 | 陈施霖 | 2024-12-20] MD=-(dP/P)/dy=D/(1+y/k)",
+    ].join("；");
+    const profileWithTrackedEvidence: DocumentTaskProfile = {
+      ...profile,
+      change_signals: [
+        {
+          table_code: "G31",
+          section_hint: "PART_I",
+          indicator_hint: "C列 修正久期",
+          change_type: "ADD",
+          evidence_text: rawEvidence,
+          confidence: 0.97,
+          evidence_verified: true,
+        },
+      ],
+    };
+    const wrapper = mount(PortraitView, {
+      props: {
+        documents: [document],
+        selectedDocumentId: document.id,
+        selectedProfile: profileWithTrackedEvidence,
+        instructionAnalysis: null,
+        analysisBusy: false,
+        workflow: null,
+        busy: false,
+        profileBusy: false,
+        profileScanMessage: "",
+      },
+    });
+
+    const evidence = wrapper.get(".evidence-plain");
+    expect(evidence.attributes("title")).toBe(evidence.text());
+    expect(evidence.attributes("title")).not.toContain("[新增");
+    expect(evidence.attributes("title")).not.toContain("[删除");
+    expect(evidence.attributes("title")).not.toContain("投资");
+  });
+
   it("keeps rescan clickable while non-profile background work is busy", async () => {
     const wrapper = mount(PortraitView, {
       props: {

@@ -59,7 +59,7 @@
             </div>
           </div>
           <p class="summary">
-            <template v-if="profile?.reason">{{ profile.reason }}</template>
+            <template v-if="profile">{{ briefProfileConclusion }}</template>
             <template v-else>{{ doc.text_excerpt || "暂无摘要，请点击「开始扫描」生成文档画像。" }}</template>
           </p>
         </div>
@@ -120,14 +120,15 @@
                     <span class="bar" style="width:40px;"><span :style="{ width: sig.confidence * 100 + '%' }"></span></span>
                   </span>
                 </td>
-                <td style="font-size:12px;max-width:220px;">
+                <td class="evidence-cell">
                   <span v-if="sig.evidence_verified === false" class="evidence-unverified" :title="sig.evidence_text">
                     <svg viewBox="0 0 24 24" fill="none" stroke="#d68910" stroke-width="2" style="width:12px;height:12px;flex-shrink:0;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                     ⚠ 未验证
                   </span>
-                  <span v-else style="color:var(--ink-600);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;" :title="sig.evidence_text">
-                    {{ sig.evidence_text || "-" }}
+                  <span v-else-if="plainEvidenceText(sig)" class="evidence-plain" :title="plainEvidenceText(sig)">
+                    {{ plainEvidenceText(sig) }}
                   </span>
+                  <span v-else class="evidence-empty">-</span>
                 </td>
               </tr>
             </tbody>
@@ -398,6 +399,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { apiClient } from "@/api/client";
+import { formatReadableEvidence, normalizeEvidenceText, shortenText } from "@/utils/evidence";
 import type {
   RawDocumentFile,
   DocumentTaskProfile,
@@ -435,6 +437,7 @@ const doc = computed(() =>
 const profile = computed(() => props.selectedProfile ?? props.workflow?.document_profile ?? null);
 const businessSignalCount = computed(() => profile.value?.change_signals.length ?? 0);
 const hasImpactItemCount = computed(() => typeof props.impactItemCount === "number");
+const briefProfileConclusion = computed(() => buildBriefProfileConclusion(profile.value, doc.value?.text_excerpt ?? ""));
 const showRawText = ref(false);
 const rawTextBusy = ref(false);
 const rawDialogText = ref("");
@@ -501,6 +504,69 @@ const routeLabel = (r: string): string =>
 
 const routeColor = (r: string): string =>
   ({ FULL_ANALYSIS: "orange", LIGHTWEIGHT_ARCHIVE: "blue", MANUAL_REVIEW: "amber", SKIP: "outline" } as Record<string, string>)[r] ?? "outline";
+
+function buildBriefProfileConclusion(profile: DocumentTaskProfile | null, fallback: string): string {
+  if (!profile) return fallback;
+  const tables = profile.in_scope_tables.length ? profile.in_scope_tables : profile.affected_table_codes;
+  const tableText = tables.length ? tables.join(" / ") : "当前文档";
+  const signals = profile.change_signals;
+  if (!signals.length) {
+    return shortenText(profile.reason || fallback || "暂未识别到明确变更信号。", 120);
+  }
+
+  const focuses = Array.from(
+    new Set(
+      signals
+        .map((signal) => cleanSignalFocus(signal.indicator_hint || signal.section_hint))
+        .filter(Boolean),
+    ),
+  ).slice(0, 2);
+  const route = profile.should_create_task ? "可进入字段定位和影响确认。" : "建议先人工复核后再决定是否建单。";
+  return `${tableText} 发现 ${signals.length} 条相关变更，重点是${focuses.join("、") || "报送口径"}，${route}`;
+}
+
+function cleanSignalFocus(value = ""): string {
+  let text = value
+    .replace(/_/g, "")
+    .replace(/^\[[^\]]+\]\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const columnPair = text.match(/^([A-Z])列\s*\/\s*([A-Z])列\s*(.+)$/);
+  if (columnPair) {
+    return shortenText(stripFocusDetail(`${columnPair[1]}/${columnPair[2]}列${columnPair[3].trim()}`), 24);
+  }
+  const bracketed = text.match(/^\[\s*([A-Z])\s+([A-Z][.．]?\s*)?(.+?)\s*\]$/);
+  if (bracketed) text = bracketed[3];
+  text = text
+    .replace(/^\[\s*/, "")
+    .replace(/\s*\]$/, "")
+    .replace(/^[A-Z]\s+[A-Z][.．]?\s*/, "")
+    .replace(/^[A-Z]列\s*/, "")
+    .replace(/^\s*[A-Z][.．、]\s*/, "")
+    .replace(/^\s*[/、，；:：-]+/, "")
+    .trim();
+  return shortenText(stripFocusDetail(text), 24);
+}
+
+function stripFocusDetail(value: string): string {
+  return value
+    .replace(/（[^）]*）/g, "")
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\s*[-－]\s*/g, "")
+    .trim();
+}
+
+function plainEvidenceText(signal: TableChangeSignal): string {
+  const raw = signal.evidence_text ?? "";
+  if (!raw) return "";
+  const rows = formatReadableEvidence(raw, [], { contextualRevisions: true });
+  const joined = rows.map((row) => row.text).filter(Boolean).join("\uff1b");
+  const fallback = joined || normalizeEvidenceText(raw);
+  if (fallback.replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, "").length > 4) {
+    return shortenText(fallback, 80);
+  }
+  return shortenText(cleanSignalFocus(signal.indicator_hint) || signal.indicator_hint || fallback, 80);
+}
 </script>
 
 <style scoped>
@@ -770,6 +836,27 @@ const routeColor = (r: string): string =>
   background: #fff3cd;
   border-radius: 4px;
   border: 1px solid #f6b93b;
+}
+
+.evidence-cell {
+  font-size: 12px;
+  max-width: 280px;
+  min-width: 220px;
+}
+
+.evidence-plain {
+  color: var(--ink-700);
+  display: -webkit-box;
+  line-height: 1.55;
+  max-height: 3.1em;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  word-break: break-word;
+}
+
+.evidence-empty {
+  color: var(--ink-400);
 }
 
 .instruction-analysis-section {

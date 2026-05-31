@@ -250,12 +250,13 @@ describe("LineageView", () => {
 
     const rows = wrapper.findAll(".evidence-row");
 
-    expect(rows).toHaveLength(2);
-    expect(rows[0].find(".evidence-meta").text()).toContain("新增 · 陈施霖 · 2024-11-22");
+    // 同一作者 + 同一动作的多次留痕修订应当合并为一行，
+    // 日期以区间形式展示，避免 Word 里一整段被切成多张卡。
+    expect(rows).toHaveLength(1);
+    expect(rows[0].find(".evidence-meta").text()).toContain("新增 · 陈施霖 · 2024-11-22 ~ 2024-12-20");
     expect(rows[0].find(".evidence-body").text()).toContain("C. 修正久期");
+    expect(rows[0].find(".evidence-body").text()).toContain("MD=-(dP/P)/dy=D/(1+y/k)");
     expect(rows[0].find(".evidence-body").text()).not.toContain("[新增");
-    expect(rows[1].find(".evidence-meta").text()).toContain("新增 · 陈施霖 · 2024-12-20");
-    expect(rows[1].find(".evidence-body").text()).toContain("MD=-(dP/P)/dy=D/(1+y/k)");
   });
 
   it("surfaces the changed institution from a scope paragraph", () => {

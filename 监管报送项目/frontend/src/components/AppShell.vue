@@ -106,7 +106,8 @@ export type PageId =
   | "ticket"
   | "catalog"
   | "library"
-  | "concepts";
+  | "concepts"
+  | "indicator-qa";
 
 const props = defineProps<{
   activePage: PageId;
@@ -154,9 +155,10 @@ const mainSteps = [
 ];
 
 const secondaryItems = [
+  { id: "indicator-qa" as PageId, icon: "✦", label: "指标问答" },
   { id: "catalog" as PageId, icon: "⬆", label: "报表目录" },
   { id: "library" as PageId, icon: "◈", label: "规则与口径" },
-  { id: "concepts" as PageId, icon: "✦", label: "监管概念库" },
+  { id: "concepts" as PageId, icon: "❋", label: "监管概念库" },
 ];
 
 // Mark steps before the active one as complete (only in main flow)
@@ -168,15 +170,16 @@ const completedSteps = computed<PageId[]>(() => {
 });
 
 const crumbMap: Record<PageId, string[]> = {
-  dashboard: ["监管报送治理", "工作台"],
-  upload:    ["监管报送治理", "1104 · 资金同业", "上传发文"],
-  portrait:  ["监管报送治理", "1104 · 资金同业", "文档画像"],
-  lineage:   ["监管报送治理", "1104 · 资金同业", "字段定位"],
-  impact:    ["监管报送治理", "1104 · 资金同业", "影响分析"],
-  ticket:    ["监管报送治理", "1104 · 资金同业", "工单草稿"],
-  catalog:   ["监管报送治理", "报表目录"],
-  library:   ["监管报送治理", "规则与口径"],
-  concepts:  ["监管报送治理", "监管概念库"],
+  dashboard:      ["监管报送治理", "工作台"],
+  upload:         ["监管报送治理", "1104 · 资金同业", "上传发文"],
+  portrait:       ["监管报送治理", "1104 · 资金同业", "文档画像"],
+  lineage:        ["监管报送治理", "1104 · 资金同业", "字段定位"],
+  impact:         ["监管报送治理", "1104 · 资金同业", "影响分析"],
+  ticket:         ["监管报送治理", "1104 · 资金同业", "工单草稿"],
+  catalog:        ["监管报送治理", "报表目录"],
+  library:        ["监管报送治理", "规则与口径"],
+  concepts:       ["监管报送治理", "监管概念库"],
+  "indicator-qa": ["监管报送治理", "指标问答"],
 };
 
 const crumbs = computed(() => crumbMap[props.activePage] ?? ["监管报送治理"]);

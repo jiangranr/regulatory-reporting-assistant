@@ -160,14 +160,19 @@
             <div class="quote" v-if="activeSignal.evidence_text">
               <span class="loc">原文摘录 · 置信度 {{ Math.round(activeSignal.confidence * 100) }}%</span>
               <div
-                v-for="row in formattedEvidenceRows"
+                v-for="row in displayedEvidenceRows"
                 :key="row.key"
                 class="evidence-row"
               >
                 <span v-if="row.action" class="evidence-meta">
                   {{ row.action }} · {{ row.author || "未知作者" }} · {{ row.date || "日期未知" }}
                 </span>
-                <span class="evidence-body">{{ row.text }}</span>
+                <span class="evidence-body">
+                  <template v-for="(segment, index) in row.segments" :key="index">
+                    <mark v-if="segment.highlighted" class="evidence-highlight">{{ segment.text }}</mark>
+                    <span v-else>{{ segment.text }}</span>
+                  </template>
+                </span>
               </div>
             </div>
             <div class="quote" v-else>
@@ -274,6 +279,7 @@
 import { computed, ref, watch } from "vue";
 import type { ConceptMatchHit, TaskWorkflow, TableChangeSignal, TableChangeType } from "@/types/api";
 import LineageGraph, { type LineageNode, type LineageEdge } from "@/components/LineageGraph.vue";
+import { formatReadableEvidence, normalizeEvidenceText, type ReadableEvidenceRow } from "@/utils/evidence";
 
 const props = withDefaults(defineProps<{
   workflow: TaskWorkflow | null;
@@ -321,14 +327,6 @@ interface CatalogTable {
   code: string;
   name: string;
   items: CatalogItem[];
-}
-
-interface EvidenceRow {
-  key: string;
-  action: string;
-  author: string;
-  date: string;
-  text: string;
 }
 
 // Build catalog from change_signals in profile
@@ -557,8 +555,32 @@ const activeCompositeMatch = computed(() => {
   return null;
 });
 
-const formattedEvidenceRows = computed<EvidenceRow[]>(() =>
-  formatEvidenceText(activeSignal.value?.evidence_text ?? ""),
+const formattedEvidenceRows = computed<ReadableEvidenceRow[]>(() =>
+  formatReadableEvidence(activeSignal.value?.evidence_text ?? "", activeEvidenceHighlightTerms.value),
+);
+
+const activeEvidenceHighlightTerms = computed(() => {
+  const signal = activeSignal.value;
+  if (!signal) return [];
+  return [
+    signal.indicator_hint,
+    displayIndicatorName(signal.indicator_hint),
+    cleanBusinessLabel(signal.indicator_hint),
+    signal.matched_item_code ?? "",
+  ].filter(Boolean);
+});
+
+const originalEvidenceRows = computed<ReadableEvidenceRow[]>(() => {
+  const context = findOriginalContextText(
+    activeSignal.value,
+    props.workflow?.document?.parsed_text || props.workflow?.document?.text_excerpt || "",
+    activeEvidenceHighlightTerms.value,
+  );
+  return context ? formatReadableEvidence(context, activeEvidenceHighlightTerms.value) : [];
+});
+
+const displayedEvidenceRows = computed<ReadableEvidenceRow[]>(() =>
+  originalEvidenceRows.value.length ? originalEvidenceRows.value : formattedEvidenceRows.value,
 );
 
 const semanticMatchTitle = computed(() =>
@@ -880,6 +902,35 @@ function cleanBusinessLabel(raw = ""): string {
     .replace(/\s+/g, "");
 }
 
+function findOriginalContextText(signal: TableChangeSignal | null, sourceText: string, terms: string[]): string {
+  if (!signal || !sourceText.trim()) return "";
+  const candidates = Array.from(
+    new Set(
+      [
+        ...terms,
+        signal.indicator_hint,
+        displayIndicatorName(signal.indicator_hint),
+        cleanBusinessLabel(signal.indicator_hint),
+      ].filter((term) => term && term.length >= 2),
+    ),
+  ).sort((a, b) => b.length - a.length);
+
+  for (const term of candidates) {
+    const index = sourceText.indexOf(term);
+    if (index < 0) continue;
+    const start = Math.max(0, index - 160);
+    const end = Math.min(sourceText.length, index + term.length + 360);
+    return trimContextBoundary(sourceText.slice(start, end));
+  }
+  return "";
+}
+
+function trimContextBoundary(value: string): string {
+  const cleaned = normalizeEvidenceText(value);
+  if (cleaned.length <= 520) return cleaned;
+  return `${cleaned.slice(0, 520).trim()}...`;
+}
+
 function indicatorMatchKeywords(raw = ""): string[] {
   const keywords = raw
     .split(/\s*\/\s*|\s*×\s*/)
@@ -893,65 +944,6 @@ function indicatorMatchKeywords(raw = ""): string[] {
 
 function normaliseForMatch(raw = ""): string {
   return cleanBusinessLabel(raw).replace(/[-·_\s]/g, "");
-}
-
-function formatEvidenceText(evidence = ""): EvidenceRow[] {
-  const parts = evidence
-    .split(/[；\n]+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const rows: EvidenceRow[] = [];
-  const fragmentsByKey = new Map<string, string[]>();
-
-  for (const part of parts) {
-    const match = part.match(/^-?\s*\[\s*(新增|删除)\s*\|\s*([^|]+?)\s*\|\s*([^\]]+?)\s*\]\s*(.*)$/);
-    if (!match) {
-      rows.push({
-        key: `raw-${rows.length}-${part}`,
-        action: "",
-        author: "",
-        date: "",
-        text: part,
-      });
-      continue;
-    }
-
-    const [, action, author, date, text] = match;
-    const key = `${action}|${author.trim()}|${date.trim()}`;
-    const existing = rows.find((row) => row.key === key);
-    if (!existing) {
-      rows.push({
-        key,
-        action,
-        author: author.trim(),
-        date: date.trim(),
-        text: "",
-      });
-      fragmentsByKey.set(key, []);
-    }
-    fragmentsByKey.get(key)!.push(text.trim());
-  }
-
-  return rows.map((row) => {
-    const fragments = fragmentsByKey.get(row.key);
-    if (!fragments) return row;
-    return {
-      ...row,
-      text: normaliseEvidenceFragments(fragments),
-    };
-  });
-}
-
-function normaliseEvidenceFragments(fragments: string[]): string {
-  const text = fragments
-    .filter(Boolean)
-    .join("")
-    .replace(/^\[/, "")
-    .replace(/\]$/, "")
-    .replace(/([A-Z])\.(?=\S)/g, "$1. ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return text || "-";
 }
 
 const changeTypeLabel = (t: TableChangeType): string =>
@@ -1158,5 +1150,13 @@ const lineageRoleLabel = (r: string): string =>
   color: var(--ink-800);
   line-height: 1.7;
   word-break: break-word;
+}
+
+.evidence-highlight {
+  background: rgba(234, 84, 4, 0.13);
+  border-radius: 4px;
+  color: var(--orange-700, #9a3412);
+  font-weight: 700;
+  padding: 0 3px;
 }
 </style>

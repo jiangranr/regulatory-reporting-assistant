@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 
 from app.models.db_models import (
     DataFieldCatalog,
+    DataSystemCatalog,
     RegReportingItem,
     ReportingItemLineage,
 )
@@ -56,11 +57,15 @@ def load_catalog_from_db(session: Session) -> ReportingSeedCatalog:
         for item in items
     ]
 
-    # Three-way join: lineage → item.item_code, field.field_code, role
+    # Four-way join: lineage → reporting_item, data_field, data_system.
+    # 把 system_code / system_name / system_type / owner_team 一起带出来，
+    # 让 analyzer 能把真实系统信息塞进 impacted_source_field_details，
+    # 进而让 build_baseline_from_impacts 按真实 system_code 分桶。
     lineage_rows = session.exec(
-        select(ReportingItemLineage, RegReportingItem, DataFieldCatalog)
+        select(ReportingItemLineage, RegReportingItem, DataFieldCatalog, DataSystemCatalog)
         .join(RegReportingItem, RegReportingItem.id == ReportingItemLineage.reporting_item_id)
         .join(DataFieldCatalog, DataFieldCatalog.id == ReportingItemLineage.data_field_id)
+        .join(DataSystemCatalog, DataSystemCatalog.id == DataFieldCatalog.data_system_id)
     ).all()
     lineage = [
         {
@@ -68,12 +73,29 @@ def load_catalog_from_db(session: Session) -> ReportingSeedCatalog:
             "data_field_code": field.field_code,
             "data_field_name": field.field_name,
             "lineage_role": ril.lineage_role,
+            "system_code": system.system_code,
+            "system_name": system.system_name,
+            "system_type": system.system_type or "",
+            "owner_team": field.owner_team or system.owner_team or "",
             # extra context that analyzer might want later; safe to ignore
             "transform_logic": ril.transform_expression or "",
             "confidence_level": ril.confidence_level or "MEDIUM",
             "review_status": ril.mapping_status or "DRAFT",
         }
-        for (ril, item, field) in lineage_rows
+        for (ril, item, field, system) in lineage_rows
+    ]
+
+    data_systems = [
+        {
+            "system_code": system.system_code,
+            "system_name": system.system_name,
+            "system_type": system.system_type or "",
+            "owner_team": system.owner_team or "",
+            "status": system.status or "ACTIVE",
+        }
+        for system in session.exec(
+            select(DataSystemCatalog).where(DataSystemCatalog.status == "ACTIVE")
+        ).all()
     ]
 
     if not reporting_items or not lineage:
@@ -92,7 +114,7 @@ def load_catalog_from_db(session: Session) -> ReportingSeedCatalog:
         reporting_items=reporting_items,
         reporting_instructions=[],
         reporting_rules=[],
-        data_systems=[],
+        data_systems=data_systems,
         data_fields=[],
         data_field_code_values=[],
         business_concept_value_mappings=[],

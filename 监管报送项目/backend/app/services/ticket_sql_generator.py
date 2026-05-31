@@ -65,8 +65,8 @@ ABILITY_NOT_APPLICABLE = "NOT_APPLICABLE"
 _NOT_APPLICABLE_REASONS = {
     "NON_DATA_ACTION": "这是{action}类任务，属于业务口径判断或流程动作，不涉及数据加工。"
                        "请业务方先确认口径后，由数据加工类子单生成取数 SQL。",
-    "SOURCE_GAP": "监管要求的字段在源系统中尚无对应来源。请先完成本工单（源系统改造），"
-                  "字段就绪后再由下游加工单生成 SQL。",
+    "SOURCE_SYSTEM_CHANGE": "这是源系统改造单，任务是评估/新增/改造源字段，而非报送取数。"
+                            "改造完成后，下游报送加工子单（数据映射 / 报送加工）将生成参考 SQL。",
     "NO_FIELDS": "本工单未关联到任何可用源字段，无法生成 SQL。请先在影响范围里勾选相关字段。",
 }
 
@@ -89,8 +89,8 @@ def assess_sql_ability(
         label = _action_label(action)
         return ABILITY_NOT_APPLICABLE, _NOT_APPLICABLE_REASONS["NON_DATA_ACTION"].format(action=label)
 
-    if action == ActionTicketType.SOURCE_SYSTEM_CHANGE and not has_source_fields:
-        return ABILITY_NOT_APPLICABLE, _NOT_APPLICABLE_REASONS["SOURCE_GAP"]
+    if action == ActionTicketType.SOURCE_SYSTEM_CHANGE:
+        return ABILITY_NOT_APPLICABLE, _NOT_APPLICABLE_REASONS["SOURCE_SYSTEM_CHANGE"]
 
     if action == ActionTicketType.VALIDATION_RULE:
         return ABILITY_VALIDATION_ONLY, ""

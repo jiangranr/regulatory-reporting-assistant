@@ -64,6 +64,7 @@ from app.services.reporting_ticket_generator import (
 )
 from app.services.impact_review_service import (
     SYSTEM_LABELS,
+    apply_confirmed_review_to_lineage,
     build_baseline_from_impacts,
     compute_stats,
     dump_review_content,
@@ -391,6 +392,8 @@ def confirm_impact_review(
     row.confirmed_at = now_utc()
     row.updated_at = row.confirmed_at
     session.add(row)
+
+    apply_confirmed_review_to_lineage(review, session)
 
     impacts = _load_impact_items(task_id, session)
     if not impacts:
@@ -1608,6 +1611,191 @@ from app.services.ticket_sql_generator import (  # noqa: E402
     generate_reference_sql,
 )
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 字段变更检测 & 六路由工单
+# ──────────────────────────────────────────────────────────────────────────────
+
+from app.models.db_models import RegFieldChangeRecord  # noqa: E402
+from app.services.field_change_detector import detect_field_changes, enrich_with_library_hit  # noqa: E402
+from app.services.field_change_ticket_router import route_all_pending  # noqa: E402
+
+
+@router.post("/{task_id}/field-changes/detect")
+def detect_task_field_changes(
+    task_id: int,
+    object_codes: list[str] | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    """触发字段目录版本对比，将变更清单写入 reg_field_change_records。
+
+    Demo 模式使用内置 mock 新版字段目录，production 接监管系统抽数。
+    object_codes 可指定报表范围，如 ["G31"]。
+    """
+    _get_task_or_404(task_id, session)
+
+    # 清除该任务之前的变更记录，保持幂等
+    old_records = session.exec(
+        select(RegFieldChangeRecord).where(RegFieldChangeRecord.task_id == task_id)
+    ).all()
+    for r in old_records:
+        session.delete(r)
+    session.commit()
+
+    # 检测变更
+    changes = detect_field_changes(object_codes=object_codes)
+    changes = enrich_with_library_hit(changes, session)
+
+    # 写入 DB
+    records = []
+    for ch in changes:
+        record = RegFieldChangeRecord(
+            task_id=task_id,
+            reporting_object_code=ch.reporting_object_code,
+            reporting_item_code=ch.reporting_item_code,
+            item_name=ch.item_name,
+            change_type=ch.change_type,
+            before_snapshot=json.dumps(ch.before_snapshot, ensure_ascii=False),
+            after_snapshot=json.dumps(ch.after_snapshot, ensure_ascii=False),
+            library_hit=ch.library_hit,
+            status="PENDING",
+        )
+        session.add(record)
+        records.append(record)
+    session.commit()
+
+    return {
+        "task_id": task_id,
+        "total": len(records),
+        "added": sum(1 for r in records if r.change_type == "ADDED"),
+        "deleted": sum(1 for r in records if r.change_type == "DELETED"),
+        "modified": sum(1 for r in records if r.change_type == "MODIFIED"),
+        "library_hit_count": sum(1 for r in records if r.library_hit),
+    }
+
+
+@router.get("/{task_id}/field-changes")
+def list_task_field_changes(
+    task_id: int,
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    """返回该任务下的变更清单。"""
+    _get_task_or_404(task_id, session)
+    records = session.exec(
+        select(RegFieldChangeRecord)
+        .where(RegFieldChangeRecord.task_id == task_id)
+        .order_by(RegFieldChangeRecord.change_type, RegFieldChangeRecord.reporting_item_code)
+    ).all()
+
+    return [
+        {
+            "id": r.id,
+            "reporting_object_code": r.reporting_object_code,
+            "reporting_item_code": r.reporting_item_code,
+            "item_name": r.item_name,
+            "change_type": r.change_type,
+            "library_hit": r.library_hit,
+            "ticket_id": r.ticket_id,
+            "status": r.status,
+            "before_snapshot": _safe_json_loads(r.before_snapshot, {}),
+            "after_snapshot": _safe_json_loads(r.after_snapshot, {}),
+        }
+        for r in records
+    ]
+
+
+@router.post("/{task_id}/field-changes/route-tickets")
+def route_field_change_tickets(
+    task_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """对所有 PENDING 状态的变更记录按六路由矩阵生成工单。"""
+    _get_task_or_404(task_id, session)
+
+    pending_count = len(session.exec(
+        select(RegFieldChangeRecord).where(
+            RegFieldChangeRecord.task_id == task_id,
+            RegFieldChangeRecord.status == "PENDING",
+        )
+    ).all())
+
+    if pending_count == 0:
+        raise HTTPException(status_code=400, detail="无待处理的变更记录，请先执行 detect")
+
+    tickets = route_all_pending(task_id, session)
+
+    return {
+        "task_id": task_id,
+        "tickets_generated": len(tickets),
+        "ticket_ids": [t.id for t in tickets if t.id],
+    }
+
+
+@router.post("/{task_id}/tickets/{ticket_id}/confirm")
+def confirm_field_change_ticket(
+    task_id: int,
+    ticket_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """业务确认字段变更工单后，根据工单类型更新 ReportingItemLineage。
+
+    - LINEAGE_BUILD（新增/告警）→ 确认后血缘状态 = CONFIRMED
+    - DATA_MAPPING（变更）      → 更新已有血缘状态 = CONFIRMED
+    - REPORT_DECOMMISSION（删除）→ 血缘状态 = RETIRED
+    """
+    _get_task_or_404(task_id, session)
+    ticket = session.get(TicketDraft, ticket_id)
+    if ticket is None or ticket.task_id != task_id:
+        raise HTTPException(status_code=404, detail="工单不存在或不属于该任务")
+
+    ticket.status = "CONFIRMED"
+    session.add(ticket)
+
+    action_type = ticket.action_ticket_type or ""
+    item_codes: list[str] = []
+    try:
+        item_codes = json.loads(ticket.related_impact_codes or "[]")
+    except Exception:
+        pass
+
+    confirmed = 0
+    retired = 0
+
+    for item_code in item_codes:
+        item = session.exec(
+            select(RegReportingItem).where(RegReportingItem.item_code == item_code)
+        ).first()
+        if not item or not item.id:
+            continue
+
+        from app.models.db_models import ReportingItemLineage
+        lineages = session.exec(
+            select(ReportingItemLineage).where(
+                ReportingItemLineage.reporting_item_id == item.id
+            )
+        ).all()
+
+        if action_type == "REPORT_DECOMMISSION":
+            for lin in lineages:
+                if lin.mapping_status != "RETIRED":
+                    lin.mapping_status = "RETIRED"
+                    session.add(lin)
+                    retired += 1
+        else:  # LINEAGE_BUILD / DATA_MAPPING
+            for lin in lineages:
+                if lin.mapping_status in ("SEED_CONFIRMED", "DRAFT", "PENDING"):
+                    lin.mapping_status = "CONFIRMED"
+                    session.add(lin)
+                    confirmed += 1
+
+    session.commit()
+    return {
+        "ticket_id": ticket_id,
+        "status": "CONFIRMED",
+        "lineage_confirmed": confirmed,
+        "lineage_retired": retired,
+    }
+
+
 ticket_router = APIRouter(prefix="/api/tickets", tags=["tickets"])
 
 
@@ -1627,11 +1815,29 @@ def _sql_safe_json(raw: str, default):
         return default
 
 
+def _extract_codes(raw_list: list) -> list[str]:
+    """从 dict-or-str 混合列表里提取 code 字段，过滤空值。"""
+    result: list[str] = []
+    for item in raw_list:
+        if isinstance(item, dict):
+            code = str(item.get("code") or "").strip()
+        else:
+            code = str(item or "").strip()
+        if code:
+            result.append(code)
+    return result
+
+
 def _build_sql_input(ticket: TicketDraft, session: Session) -> SqlGenerationInput:
     """从工单 + 影响资产 + 字段目录 + 血缘 + 监管元数据组装 SQL 生成输入。"""
     assets = _sql_safe_json(ticket.affected_assets, {})
-    item_codes = assets.get("reporting_item_codes", []) if isinstance(assets, dict) else []
-    source_field_codes = assets.get("source_fields", []) if isinstance(assets, dict) else []
+    # _build_affected_assets 写入的 key 是 "reporting_items" / "source_fields"，值是 dict 列表
+    item_codes = _extract_codes(assets.get("reporting_items", []) if isinstance(assets, dict) else [])
+    source_field_codes = _extract_codes(assets.get("source_fields", []) if isinstance(assets, dict) else [])
+    # 报送集市子单（REPORT_PROCESSING）的 source_fields 可能为空，其 REPORT_FIELD 就是要加工的目标字段
+    # 回退到 reporting_fields，让 SQL 生成器能看到 rpt_xxx 字段
+    if not source_field_codes and isinstance(assets, dict):
+        source_field_codes = _extract_codes(assets.get("reporting_fields", []))
 
     reporting_items: list[ReportingItemContext] = []
     item_ids: list[int] = []
