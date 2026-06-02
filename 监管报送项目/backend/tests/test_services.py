@@ -1,3 +1,5 @@
+import json
+
 from app.models.db_models import RegDocument
 from app.services import document_profiler
 from app.services.document_parser import parse_text_document
@@ -81,6 +83,41 @@ def test_document_profile_prompt_includes_only_found_1104_items():
     assert "G24.MAIN.INTERBANK_BORROWING_BAL_TOP100" in prompt
     assert "G31.PART_I.BOND_INVESTMENT_BALANCE" not in prompt
     assert "change_signals" in prompt
+
+
+def test_document_profile_prompt_excludes_internal_revision_span_json():
+    document = RegDocument(
+        filename="notice.txt",
+        storage_path="/tmp/notice.txt",
+        title="G01_IV口径调整通知",
+        parsed_text="\n".join(
+            [
+                "# 报表表样与填报说明联合导入",
+                "",
+                "## 当前版本修订动作（共 1 条）",
+                "- [新增 | 陈施霖 | 2024-12-23] 金融机构",
+                "",
+                "## 当前版本原位修订片段（共 2 段）",
+                '{"type": "TEXT", "text": "[11.a.2", "author": "", "date": "", "action": ""}',
+                '{"type": "INSERT", "text": "金融机构", "author": "陈施霖", "date": "2024-12-23T08:55:00Z", "action": "新增"}',
+                "",
+                "## 填报说明正文",
+                "[11.a.2 通过第三方互联网平台吸收的个人活期存款]指项目 11.a 中，金融机构吸收的个人活期存款。",
+            ]
+        ),
+        parse_quality="GOOD",
+    )
+
+    prompt = document_profiler._build_prompt(  # noqa: SLF001
+        document,
+        ["G01_IV"],
+        {"reporting_items": []},
+    )
+
+    assert "当前版本原位修订片段" not in prompt
+    assert '{"type": "TEXT"' not in prompt
+    assert "当前版本修订动作" in prompt
+    assert "[11.a.2 通过第三方互联网平台吸收的个人活期存款]" in prompt
 
 
 def test_document_profile_prompt_includes_reporting_objects_and_sections():
@@ -394,6 +431,297 @@ def test_document_profile_adds_institution_scope_signal_when_model_misses(monkey
     assert "[新增 | 陈施霖 | 2024-12-16] 直销银行、" in institution_signals[0].evidence_text
     assert "[新增 | 周世杰 | 2021-12-09] 、金融资产投资公司" not in institution_signals[0].evidence_text
     assert paragraph in institution_signals[0].evidence_text
+
+
+def test_document_profile_adds_revision_item_definition_signals_when_model_misses(monkeypatch):
+    definitions = [
+        (
+            "[11.1 通过互联网吸收的个人定期存款]指项目 11 中，金融机构个人客户"
+            "在不通过银行网点、柜面、开卡机等实体渠道，而直接通过手机银行、网上银行、"
+            "第三方互联网平台等互联网渠道为客户远程开立 II 类账户后吸收的定期存款。"
+        ),
+        "[11.2 通过互联网吸收的个人活期存款]指项目 11 中，金融机构吸收的活期存款。",
+        "[11.a.1 通过第三方互联网平台吸收的个人定期存款]指项目 11.a 中，金融机构吸收的个人定期存款。",
+        "[11.a.2 通过第三方互联网平台吸收的个人活期存款]指项目 11.a 中，金融机构吸收的个人活期存款。",
+    ]
+    revision_spans = [
+        {"type": "TEXT", "text": "[11.1 通过", "author": "", "date": "", "action": ""},
+        {"type": "INSERT", "text": "互联网", "author": "陈施霖", "date": "2024-12-23T08:55:00Z", "action": "新增"},
+        {"type": "TEXT", "text": "吸收的个人定期存款]指项目 11 中，", "author": "", "date": "", "action": ""},
+        {"type": "INSERT", "text": "金融机构", "author": "陈施霖", "date": "2024-12-23T08:55:00Z", "action": "新增"},
+        {"type": "TEXT", "text": "个人客户在不通过", "author": "", "date": "", "action": ""},
+        {"type": "DELETE", "text": "银行", "author": "陈施霖", "date": "2024-12-23T08:55:00Z", "action": "删除"},
+        {"type": "TEXT", "text": "网点、柜面、", "author": "", "date": "", "action": ""},
+        {"type": "DELETE", "text": "开卡", "author": "陈施霖", "date": "2024-12-23T08:55:00Z", "action": "删除"},
+        {"type": "TEXT", "text": "机等实体渠道，而直接通过手机银行、网上银行、第三方互联网平台等", "author": "", "date": "", "action": ""},
+        {"type": "INSERT", "text": "互联网", "author": "陈施霖", "date": "2024-12-23T08:55:00Z", "action": "新增"},
+        {"type": "TEXT", "text": "渠道为客户", "author": "", "date": "", "action": ""},
+        {"type": "DELETE", "text": "远程", "author": "陈施霖", "date": "2024-12-23T08:55:00Z", "action": "删除"},
+        {"type": "TEXT", "text": "开立 II 类账户后吸收的定期存款。", "author": "", "date": "", "action": ""},
+    ]
+    document = RegDocument(
+        filename="G01填报说明（251）.doc",
+        storage_path="/tmp/G01填报说明（251）.doc",
+        title="G01 指标变更扫描",
+        parsed_text="\n".join(
+            [
+                "## 当前版本修订动作（共 5 条，原始修订共 8 条）",
+                "- [新增 | 陈施霖 | 2024-12-23] 金融机构",
+                "- [新增 | 陈施霖 | 2024-12-23] 互联网",
+                "- [删除 | 陈施霖 | 2024-12-23] 银行",
+                "- [删除 | 陈施霖 | 2024-12-23] 开卡",
+                "- [删除 | 陈施霖 | 2024-12-23] 远程",
+                "",
+                "## 当前版本原位修订片段（共 13 段）",
+                *[json.dumps(span, ensure_ascii=False) for span in revision_spans],
+                "",
+                "## 填报说明正文",
+                *definitions,
+            ]
+        ),
+        parse_quality="GOOD",
+    )
+
+    calls = []
+
+    def fake_complete_json(messages):
+        calls.append(messages)
+        if "业务变更摘要" in messages[0]["content"]:
+            return (
+                {
+                    "business_signal_summaries": [
+                        {
+                            "business_signal_id": "G01::11.a.1",
+                            "change_type": "SCOPE_ADJUST",
+                            "changed_dimension": "统计主体",
+                            "changed_from": "",
+                            "changed_to": "金融机构",
+                            "change_summary": "口径调整：11.a.1 统计主体明确为金融机构，影响个人定期存款填报口径。",
+                            "confidence": 0.9,
+                        },
+                        {
+                            "business_signal_id": "G01::11.a.2",
+                            "change_type": "SCOPE_ADJUST",
+                            "changed_dimension": "统计主体",
+                            "changed_from": "",
+                            "changed_to": "金融机构",
+                            "change_summary": "口径调整：11.a.2 统计主体明确为金融机构，影响个人活期存款填报口径。",
+                            "confidence": 0.9,
+                        },
+                    ]
+                },
+                '{"ok": true}',
+                "fake-summary-model",
+            )
+        return (
+            {
+                "change_signals": [
+                    {
+                        "table_code": "G01",
+                        "section_hint": "项目11",
+                        "indicator_hint": "11.a.1通过第三方互联网平台吸收的个人定期存款",
+                        "change_type": "ADD",
+                        "evidence_text": "[11.a.1 通过第三方互联网平台吸收的个人定期存款]指项目 11.a 中，吸收的个人定期存款。",
+                        "confidence": 0.8,
+                    },
+                    {
+                        "table_code": "G01",
+                        "section_hint": "项目11",
+                        "indicator_hint": "11.a.2通过第三方互联网平台吸收的个人活期存款",
+                        "change_type": "ADD",
+                        "evidence_text": "[11.a.2 通过第三方互联网平台吸收的个人活期存款]指项目 11.a 中，吸收的个人活期存款。",
+                        "confidence": 0.8,
+                    },
+                ],
+                "reason": "模型只抽取了 11.a 子项。",
+            },
+            '{"ok": true}',
+            "fake-model",
+        )
+
+    monkeypatch.setattr(document_profiler, "complete_json", fake_complete_json)
+
+    profile = document_profiler.generate_document_profile(
+        document,
+        {
+            "reporting_objects": [{"object_code": "G01", "object_name": "资产负债项目统计表"}],
+            "reporting_sections": [],
+            "reporting_items": [],
+        },
+    )
+
+    signals_by_hint = {signal.indicator_hint: signal for signal in profile.change_signals}
+
+    for definition in definitions:
+        raw_hint = definition.split("]", 1)[0].lstrip("[")
+        item_code, item_name = raw_hint.split(" ", 1)
+        hint = f"{item_code}{item_name}"
+        assert hint in signals_by_hint
+        assert "[新增 | 陈施霖 | 2024-12-23] 金融机构" in signals_by_hint[hint].evidence_text
+        assert definition in signals_by_hint[hint].evidence_text
+        assert signals_by_hint[hint].change_type == "SCOPE_ADJUST"
+
+    assert len(calls) == 2
+    assert signals_by_hint["11.a.1通过第三方互联网平台吸收的个人定期存款"].business_signal_id == "G01::11.a.1"
+    assert signals_by_hint["11.a.1通过第三方互联网平台吸收的个人定期存款"].item_codes == ["11.a.1"]
+    assert signals_by_hint["11.a.1通过第三方互联网平台吸收的个人定期存款"].changed_dimension == "统计主体"
+    assert signals_by_hint["11.a.1通过第三方互联网平台吸收的个人定期存款"].changed_to == "金融机构"
+    assert signals_by_hint["11.a.1通过第三方互联网平台吸收的个人定期存款"].candidate_sources
+    spans = signals_by_hint["11.1通过互联网吸收的个人定期存款"].revision_spans
+    assert [span["type"] for span in spans if span["type"] != "TEXT"] == [
+        "INSERT",
+        "INSERT",
+        "DELETE",
+        "DELETE",
+        "INSERT",
+        "DELETE",
+    ]
+    assert [span["text"] for span in spans if span["type"] == "DELETE"] == ["银行", "开卡", "远程"]
+    assert spans[1]["author"] == "陈施霖"
+    assert (
+        signals_by_hint["11.a.1通过第三方互联网平台吸收的个人定期存款"].change_summary
+        == "口径调整：11.a.1 统计主体明确为金融机构，影响个人定期存款填报口径。"
+    )
+
+
+def test_document_profile_merges_candidates_before_structured_summary(monkeypatch):
+    document = RegDocument(
+        filename="G01填报说明（251）.doc",
+        storage_path="/tmp/G01填报说明（251）.doc",
+        title="G01 指标变更扫描",
+        parsed_text="\n".join(
+            [
+                "## 当前版本修订动作（共 1 条，原始修订共 8 条）",
+                "- [新增 | 陈施霖 | 2024-12-23] 金融机构",
+                "",
+                "## 填报说明正文",
+                "[11.a.2 通过第三方互联网平台吸收的个人活期存款]指项目 11.a 中，金融机构吸收的个人活期存款。",
+            ]
+        ),
+        parse_quality="GOOD",
+    )
+
+    def fake_complete_json(messages):
+        if "业务变更摘要" in messages[0]["content"]:
+            prompt = messages[1]["content"]
+            assert prompt.count("business_signal_id: G01::11.a.2") == 1
+            assert "candidate_sources:" in prompt
+            assert "revision_actions:" in prompt
+            return (
+                {
+                    "business_signal_summaries": [
+                        {
+                            "business_signal_id": "G01::11.a.2",
+                            "change_type": "SCOPE_ADJUST",
+                            "changed_dimension": "统计主体",
+                            "changed_from": "",
+                            "changed_to": "金融机构",
+                            "change_summary": "口径调整：11.a.2 的统计主体明确为金融机构，影响个人活期存款填报口径。",
+                            "confidence": 0.91,
+                        }
+                    ]
+                },
+                '{"ok": true}',
+                "fake-summary-model",
+            )
+        return (
+            {
+                "change_signals": [
+                    {
+                        "table_code": "G01",
+                        "section_hint": "第 IV 部分",
+                        "indicator_hint": "11.a.2 通过第三方互联网平台吸收的个人活期存款（B列 其中：储蓄存款）",
+                        "change_type": "ADD",
+                        "evidence_text": "11.a.2 通过第三方互联网平台吸收的个人活期存款，定义中出现金融机构。",
+                        "confidence": 0.3,
+                    },
+                    {
+                        "table_code": "G01",
+                        "section_hint": "第 IV 部分",
+                        "indicator_hint": "11.a.1/11.a.2 附注解释",
+                        "change_type": "SCOPE_ADJUST",
+                        "evidence_text": "11.a.1/11.a.2 附注解释的定义发生调整。",
+                        "confidence": 0.3,
+                    },
+                ],
+                "reason": "模型输出重复候选。",
+            },
+            '{"ok": true}',
+            "fake-model",
+        )
+
+    monkeypatch.setattr(document_profiler, "complete_json", fake_complete_json)
+
+    profile = document_profiler.generate_document_profile(
+        document,
+        {
+            "reporting_objects": [{"object_code": "G01", "object_name": "资产负债项目统计表"}],
+            "reporting_sections": [],
+            "reporting_items": [],
+        },
+    )
+
+    signals_by_id = {signal.business_signal_id: signal for signal in profile.change_signals}
+
+    assert list(signals_by_id) == ["G01::11.a.1", "G01::11.a.2"]
+    signal = signals_by_id["G01::11.a.2"]
+    assert signal.item_codes == ["11.a.2"]
+    assert signal.changed_dimension == "统计主体"
+    assert signal.changed_to == "金融机构"
+    assert signal.change_summary == "口径调整：11.a.2 的统计主体明确为金融机构，影响个人活期存款填报口径。"
+    assert len(signal.candidate_sources) == 3
+
+
+def test_merge_business_signals_sorts_item_codes_and_text_labels_together():
+    signals = [
+        document_profiler.TableChangeSignal(
+            table_code="G01",
+            indicator_hint="填报机构范围",
+            change_type="SCOPE_ADJUST",
+            evidence_text="填报机构范围调整。",
+        ),
+        document_profiler.TableChangeSignal(
+            table_code="G01",
+            indicator_hint="11.a.1通过第三方互联网平台吸收的个人定期存款",
+            change_type="SCOPE_ADJUST",
+            evidence_text="11.a.1 统计口径调整。",
+        ),
+    ]
+
+    merged = document_profiler._merge_business_signals(signals)  # noqa: SLF001
+
+    assert [signal.business_signal_id for signal in merged] == [
+        "G01::11.a.1",
+        "G01::填报机构范围",
+    ]
+
+
+def test_fallback_change_summary_keeps_generic_wording_without_term_mapping():
+    institution_signal = document_profiler.TableChangeSignal(
+        table_code="G31",
+        section_hint="第二部分：一般说明",
+        indicator_hint="填报机构范围",
+        change_type="SCOPE_ADJUST",
+        evidence_text="[新增 | 陈施霖 | 2024-12-16] 直销银行、；3．填报机构：第IV部分：政策性银行、直销银行。",
+        confidence=0.86,
+    )
+    column_signal = document_profiler.TableChangeSignal(
+        table_code="G31",
+        section_hint="第 I 部分：底层资产投资情况",
+        indicator_hint="D列/ E列列位说明（因新增C列发生顺延）",
+        change_type="SCOPE_ADJUST",
+        evidence_text="[新增 | 陈施霖 | 2024-12-16] C.；D列/E列列位说明因新增C列发生顺延。",
+        confidence=0.72,
+    )
+
+    institution_summary = document_profiler._fallback_change_summary(institution_signal)  # noqa: SLF001
+    column_summary = document_profiler._fallback_change_summary(column_signal)  # noqa: SLF001
+
+    assert "修订记录新增" in institution_summary
+    assert "修订记录新增" in column_summary
+    assert "限定" not in institution_summary
+    assert "限定" not in column_summary
+    assert "统计主体明确为金融机构" not in institution_summary
 
 
 def test_document_profile_route_uses_in_scope_actionable_signal():

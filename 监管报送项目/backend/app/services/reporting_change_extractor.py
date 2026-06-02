@@ -2,6 +2,8 @@ import re
 
 from pydantic import BaseModel, Field
 
+from app.services.hallucination_guard import is_signal_eligible_for_downstream
+
 
 class ReportingChangeDraft(BaseModel):
     evidence_text: str
@@ -13,6 +15,7 @@ class ReportingChangeDraft(BaseModel):
     indicator_hint: str = ""
     match_status: str = ""
     composite_match: dict = Field(default_factory=dict)
+    change_axis: str = "UNCLEAR"  # ROW / COLUMN / CELL / UNCLEAR
 
 
 # 新版：将文档画像的 change_signals 转换为 ReportingChangeDraft
@@ -48,6 +51,8 @@ def signals_to_changes(
     for signal in signals:
         if not isinstance(signal, dict):
             continue
+        if not is_signal_eligible_for_downstream(signal):
+            continue
         table_code = str(signal.get("table_code", "")).strip().upper()
         if not table_code:
             continue
@@ -55,6 +60,8 @@ def signals_to_changes(
         change_type = _CHANGE_TYPE_MAP.get(raw_change_type, "MANUAL_REVIEW")
         indicator_hint = str(signal.get("indicator_hint", "")).strip()
         evidence_text = str(signal.get("evidence_text", "")).strip()
+        raw_axis = str(signal.get("change_axis", "")).strip().upper()
+        change_axis = raw_axis if raw_axis in {"ROW", "COLUMN", "CELL", "UNCLEAR"} else "UNCLEAR"
         try:
             confidence = min(max(float(signal.get("confidence", 0.7)), 0.0), 1.0)
         except (TypeError, ValueError):
@@ -84,6 +91,7 @@ def signals_to_changes(
                 indicator_hint=indicator_hint,
                 match_status=match_status,
                 composite_match=composite_match,
+                change_axis=change_axis,
             )
         )
 
@@ -118,7 +126,7 @@ def _match_item(indicator_hint: str, items: list[dict]) -> str:
          这是 cell 级 item（如 G31 的 455 个 cell）的主路径，因为它们的
          item_name 形如 "1 行·D 列 · ..."，与 hint "债券投资合计 × D_因持有非底层"
          字符串差距很大，整段匹配根本无效。
-      3. 兜底取该 table 下 item_code 最短的粗指标，保持幂等。
+      3. 没有可靠匹配时返回空字符串，交给人工复核。
     """
     if not items:
         return ""
@@ -131,6 +139,21 @@ def _match_item(indicator_hint: str, items: list[dict]) -> str:
         ]
         if hits:
             return max(hits, key=lambda it: len(it.get("item_code", "")))["item_code"]
+
+        # ── 1.5. 去前缀后的 row_label 归一化子串匹配
+        # 解决 DB 行号与信号行号不一致的情况（如 Excel 把 "11.a.2" 解析成 "11.a.1"，
+        # 但业务名称"通过第三方互联网平台吸收的个人活期存款"是相同的）。
+        # 要求去前缀后至少 6 字符，避免"活期""贷款"等短标签产生误匹配。
+        hint_norm = _norm_label(indicator_hint)
+        if hint_norm and len(hint_norm) >= 6:
+            norm_hits = [
+                it for it in items
+                if (rl := _norm_label(it.get("row_label", "")))
+                and len(rl) >= 6
+                and (hint_norm in rl or rl in hint_norm)
+            ]
+            if norm_hits:
+                return max(norm_hits, key=lambda it: len(it.get("item_code", "")))["item_code"]
 
         # ── 2. 行 × 列 双轴
         parts = re.split(r"\s*[×xX]\s*", indicator_hint, maxsplit=1)
@@ -168,23 +191,23 @@ def _match_item(indicator_hint: str, items: list[dict]) -> str:
                         return (len(chinese_re.findall(rl)), -len(it.get("item_code", "")))
                     return max(col_cands, key=_semantic_score)["item_code"]
 
-    # ── 4. 兜底：取粗粒度
-    coarse = min(items, key=lambda it: (len(it.get("item_code", "")), it.get("item_code", "")))
-    return coarse["item_code"]
+    # ── 4. 没有可靠字面匹配：保留为说明级信号，不伪造字段级影响项。
+    return ""
 
 
 def _norm_label(s: str) -> str:
     """归一化行/列标签，去掉序号前缀、标点、空白，便于子串比较。
 
     例子：
-      "1.债券投资合计"        → "债券投资合计"
-      "D·因持有非底层资产..." → "D因持有非底层资产..."
-      "D_因持有非底层资产..." → "D因持有非底层资产..."
+      "1.债券投资合计"                 → "债券投资合计"
+      "11.a.1通过第三方互联网平台..." → "通过第三方互联网平台..."
+      "11.a.2通过第三方互联网平台..." → "通过第三方互联网平台..."（与上行去前缀后相同，能互相命中）
+      "D·因持有非底层资产..."         → "D因持有非底层资产..."
     """
     if not s:
         return ""
-    # 去掉行号前缀 "1." / "10.0-" 等
-    s = re.sub(r"^\d+(?:\.\d+)?\s*[\-．\.·]?\s*", "", s)
+    # 去掉行号前缀，支持纯数字段（1. / 10.）和含字母段（11.a. / 11.a.1.）
+    s = re.sub(r"^\d+(?:\.[a-zA-Z0-9]+)*\s*[\-．\.·]?\s*", "", s)
     # 去掉所有标点和空白
     s = re.sub(r"[·_\-．\.\s、，：（）\(\)]+", "", s)
     return s

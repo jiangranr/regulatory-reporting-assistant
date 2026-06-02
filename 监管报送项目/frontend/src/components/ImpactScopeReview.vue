@@ -123,23 +123,85 @@
             <div class="add-field">
               <input
                 :data-test="`field-code-${system.responsible_system}`"
-                v-model="draftFields[system.responsible_system].code"
+                v-model="fieldDraft(item, system).code"
                 placeholder="字段技术编码"
               />
               <input
                 :data-test="`field-name-${system.responsible_system}`"
-                v-model="draftFields[system.responsible_system].name"
+                v-model="fieldDraft(item, system).name"
                 placeholder="展示名（可选）"
               />
               <button
                 :data-test="`add-field-${system.responsible_system}`"
                 type="button"
-                @click="addField(system)"
+                @click="addField(item, system)"
               >
                 <Plus :size="13" />添加字段
               </button>
             </div>
           </details>
+
+          <div class="add-system">
+            <div class="add-system-head">
+              <strong>新增系统 + 字段</strong>
+              <span>优先从系统目录选择；目录中没有时可直接手工补录。</span>
+            </div>
+            <div class="add-system-grid">
+              <select
+                :data-test="`new-system-option-${item.reporting_item_code}`"
+                v-model="systemDraft(item).selectedCode"
+                @change="applySelectedSystemOption(item)"
+              >
+                <option value="">从系统目录选择（可选）</option>
+                <option v-for="option in systemOptions" :key="option.system_code" :value="option.system_code">
+                  {{ option.system_name }} · {{ option.system_code }}
+                </option>
+              </select>
+              <input
+                :data-test="`new-system-code-${item.reporting_item_code}`"
+                v-model="systemDraft(item).code"
+                placeholder="系统编码"
+              />
+              <input
+                :data-test="`new-system-name-${item.reporting_item_code}`"
+                v-model="systemDraft(item).name"
+                placeholder="系统名称"
+              />
+              <select
+                :data-test="`new-system-type-${item.reporting_item_code}`"
+                v-model="systemDraft(item).type"
+              >
+                <option value="">系统类型（可选）</option>
+                <option value="SOURCE">SOURCE · 源系统</option>
+                <option value="ODS">ODS · 贴源层</option>
+                <option value="MDM">MDM · 主数据</option>
+                <option value="DM">DM · 数据主题层</option>
+                <option value="MART">MART · 数据集市</option>
+                <option value="REPORTING">REPORTING · 报送系统</option>
+              </select>
+              <input
+                v-model="systemDraft(item).ownerTeam"
+                placeholder="责任团队（可选）"
+              />
+              <input
+                :data-test="`new-system-field-code-${item.reporting_item_code}`"
+                v-model="systemDraft(item).fieldCode"
+                placeholder="字段技术编码"
+              />
+              <input
+                :data-test="`new-system-field-name-${item.reporting_item_code}`"
+                v-model="systemDraft(item).fieldName"
+                placeholder="字段展示名（可选）"
+              />
+              <button
+                :data-test="`add-system-field-${item.reporting_item_code}`"
+                type="button"
+                @click="addSystemField(item)"
+              >
+                <Plus :size="13" />添加系统字段
+              </button>
+            </div>
+          </div>
 
           <label class="note-box">
             <span>业务备注</span>
@@ -183,6 +245,7 @@ import type {
   ImpactReviewResponse,
   ImpactReviewStats,
   ImpactReviewSystem,
+  ImpactReviewSystemOption,
 } from "@/types/api";
 
 const props = defineProps<{ taskId: number; initial?: ImpactReviewResponse | null; activeStage?: 2 | 3 }>();
@@ -194,6 +257,17 @@ const loading = ref(false);
 const mutating = ref(false);
 const errorMessage = ref("");
 const draftFields = reactive<Record<string, { code: string; name: string }>>({});
+const draftSystems = reactive<Record<string, NewSystemDraft>>({});
+
+interface NewSystemDraft {
+  selectedCode: string;
+  code: string;
+  name: string;
+  type: string;
+  ownerTeam: string;
+  fieldCode: string;
+  fieldName: string;
+}
 
 const statusLabel = computed(() => {
   if (!response.value) return "未加载";
@@ -212,6 +286,7 @@ const stageDescription = computed(() =>
 const localStats = computed<ImpactReviewStats>(() => computeStats(review.value));
 const totalFields = computed(() => (review.value?.items ?? []).reduce((sum, item) => sum + totalFieldCount(item), 0));
 const taskNo = computed(() => `TKM-${String(props.taskId).padStart(4, "0")}`);
+const systemOptions = computed<ImpactReviewSystemOption[]>(() => response.value?.system_options ?? []);
 
 watch(
   () => props.taskId,
@@ -247,6 +322,7 @@ async function fetchReview(): Promise<void> {
 
 async function saveReview(): Promise<void> {
   if (!review.value) return;
+  commitPendingDrafts();
   mutating.value = true;
   errorMessage.value = "";
   try {
@@ -279,6 +355,7 @@ async function resetReview(): Promise<void> {
 
 async function confirmReview(): Promise<void> {
   if (!review.value) return;
+  commitPendingDrafts();
   mutating.value = true;
   errorMessage.value = "";
   try {
@@ -296,22 +373,82 @@ async function confirmReview(): Promise<void> {
   }
 }
 
-function addField(system: ImpactReviewSystem): void {
-  const draft = draftFields[system.responsible_system];
+function addField(item: ImpactReviewItem, system: ImpactReviewSystem): void {
+  commitFieldDraft(item, system);
+}
+
+function commitFieldDraft(item: ImpactReviewItem, system: ImpactReviewSystem): void {
+  const draft = fieldDraft(item, system);
   const code = draft?.code.trim();
   if (!code) return;
+  pushBusinessField(system, code, draft.name.trim());
+  draft.code = "";
+  draft.name = "";
+}
+
+function addSystemField(item: ImpactReviewItem): void {
+  commitSystemDraft(item);
+}
+
+function commitSystemDraft(item: ImpactReviewItem): void {
+  const draft = systemDraft(item);
+  const systemCode = draft.code.trim();
+  const fieldCode = draft.fieldCode.trim();
+  if (!systemCode || !fieldCode) return;
+  let system = item.systems.find((candidate) => candidate.responsible_system === systemCode);
+  if (!system) {
+    system = {
+      responsible_system: systemCode,
+      responsible_system_zh: draft.name.trim() || systemCode,
+      system_type: draft.type.trim(),
+      owner_team: draft.ownerTeam.trim(),
+      fields: [],
+    };
+    item.systems.push(system);
+  }
+  pushBusinessField(system, fieldCode, draft.fieldName.trim());
+  resetSystemDraft(draft);
+}
+
+function pushBusinessField(system: ImpactReviewSystem, code: string, name: string): void {
+  const existing = system.fields.find((field) => field.field_code === code);
+  if (existing) {
+    existing.selected = true;
+    existing.removed = false;
+    if (!existing.field_name && name) existing.field_name = name;
+    return;
+  }
   system.fields.push({
     field_code: code,
-    field_name: draft.name.trim(),
-    lineage_role: system.responsible_system === "SOURCE_SYSTEM" ? "SOURCE_FIELD" : "DERIVED_FIELD",
+    field_name: name,
+    lineage_role: defaultLineageRole(system.system_type),
     source: "BUSINESS",
     selected: true,
     edited: false,
     removed: false,
     is_required: false,
   });
-  draft.code = "";
-  draft.name = "";
+}
+
+function defaultLineageRole(systemType = ""): string {
+  return ["SOURCE", "ODS", "MDM"].includes(systemType.trim().toUpperCase()) ? "SOURCE_FIELD" : "DERIVED_FIELD";
+}
+
+function commitPendingDrafts(): void {
+  for (const item of review.value?.items ?? []) {
+    for (const system of [...item.systems]) commitFieldDraft(item, system);
+    commitSystemDraft(item);
+  }
+}
+
+function applySelectedSystemOption(item: ImpactReviewItem): void {
+  const draft = systemDraft(item);
+  const option = systemOptions.value.find((candidate) => candidate.system_code === draft.selectedCode);
+  if (!option) return;
+  draft.code = option.system_code;
+  draft.name = option.system_name;
+  draft.type = option.system_type;
+  draft.ownerTeam = option.owner_team;
 }
 
 function selectedFieldCount(item: ImpactReviewItem): number {
@@ -340,12 +477,37 @@ function systemInitial(value: string): string {
 
 function initDraftFields(content: ImpactReviewContent | null): void {
   for (const item of content?.items ?? []) {
+    systemDraft(item);
     for (const system of item.systems) {
-      if (!draftFields[system.responsible_system]) {
-        draftFields[system.responsible_system] = { code: "", name: "" };
-      }
+      fieldDraft(item, system);
     }
   }
+}
+
+function fieldDraft(item: ImpactReviewItem, system: ImpactReviewSystem): { code: string; name: string } {
+  const key = `${item.reporting_item_code}::${system.responsible_system}`;
+  return draftFields[key] ?? (draftFields[key] = { code: "", name: "" });
+}
+
+function systemDraft(item: ImpactReviewItem): NewSystemDraft {
+  const key = item.reporting_item_code;
+  return draftSystems[key] ?? (draftSystems[key] = emptySystemDraft());
+}
+
+function emptySystemDraft(): NewSystemDraft {
+  return {
+    selectedCode: "",
+    code: "",
+    name: "",
+    type: "",
+    ownerTeam: "",
+    fieldCode: "",
+    fieldName: "",
+  };
+}
+
+function resetSystemDraft(draft: NewSystemDraft): void {
+  Object.assign(draft, emptySystemDraft());
 }
 
 function computeStats(content: ImpactReviewContent | null): ImpactReviewStats {
@@ -585,7 +747,8 @@ button.step:hover {
 }
 
 .ir-actions button,
-.add-field button {
+.add-field button,
+.add-system button {
   align-items: center;
   background: var(--surface-alt);
   border: 1px solid var(--border);
@@ -771,6 +934,8 @@ button.step:hover {
 }
 
 .add-field input,
+.add-system input,
+.add-system select,
 .note-box textarea {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -778,6 +943,42 @@ button.step:hover {
   color: var(--ink-800);
   font-size: 12px;
   padding: 7px 8px;
+}
+
+.add-system {
+  background: var(--surface-alt);
+  border: 1px dashed var(--border-strong);
+  border-radius: 9px;
+  margin: 0 10px 10px;
+  padding: 10px;
+}
+
+.add-system-head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.add-system-head strong {
+  color: var(--ink-700);
+  font-size: 12px;
+}
+
+.add-system-head span {
+  color: var(--ink-500);
+  font-size: 11px;
+}
+
+.add-system-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.add-system-grid button {
+  grid-column: span 1;
 }
 
 .note-box {
@@ -859,6 +1060,14 @@ button.step:hover {
 
   .add-field {
     display: flex;
+  }
+
+  .add-system-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .add-system-grid button {
+    grid-column: auto;
   }
 
   .field-row {

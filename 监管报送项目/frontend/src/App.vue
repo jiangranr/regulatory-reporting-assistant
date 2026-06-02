@@ -1,5 +1,10 @@
 <template>
+  <IndicatorQAView
+    v-if="activePage === 'indicator-qa'"
+    @navigate="activePage = $event"
+  />
   <AppShell
+    v-else
     :active-page="activePage"
     :error-message="errorMessage"
     @navigate="activePage = $event"
@@ -77,7 +82,6 @@
       :busy="busy"
     />
     <ConceptsView v-else-if="activePage === 'concepts'" />
-    <IndicatorQAView v-else-if="activePage === 'indicator-qa'" />
   </AppShell>
 </template>
 

@@ -1,6 +1,10 @@
+import io
+import zipfile
+
 from app.services.instruction_parser import (
     InstructionParseResult,
     RevisionFragment,
+    _extract_docx_revision_spans,
     _parse_html,
     build_pair_document_text,
     current_version_revisions,
@@ -36,6 +40,46 @@ def test_current_version_revisions_keeps_latest_year_only():
     filtered = current_version_revisions(revisions)
 
     assert [r.text for r in filtered] == ["直销银行、", "旧列号D"]
+
+
+def test_extract_docx_revision_spans_preserves_order_and_latest_year_only():
+    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:body>
+        <w:p>
+          <w:r><w:t>[11.1 通过</w:t></w:r>
+          <w:ins w:author="old" w:date="2021-12-09T10:00:00Z"><w:r><w:t>历史新增</w:t></w:r></w:ins>
+          <w:del w:author="old" w:date="2021-12-09T10:00:00Z"><w:r><w:delText>历史删除</w:delText></w:r></w:del>
+          <w:ins w:author="陈施霖" w:date="2024-12-23T08:55:00Z"><w:r><w:t>互联网</w:t></w:r></w:ins>
+          <w:r><w:t>吸收的个人存款]指</w:t></w:r>
+          <w:ins w:author="陈施霖" w:date="2024-12-23T08:55:00Z"><w:r><w:t>金融机构</w:t></w:r></w:ins>
+          <w:r><w:t>不通过</w:t></w:r>
+          <w:del w:author="陈施霖" w:date="2024-12-23T08:55:00Z"><w:r><w:delText>银行</w:delText></w:r></w:del>
+          <w:r><w:t>网点、柜面、</w:t></w:r>
+          <w:del w:author="陈施霖" w:date="2024-12-23T08:55:00Z"><w:r><w:delText>开卡</w:delText></w:r></w:del>
+          <w:r><w:t>机等实体渠道</w:t></w:r>
+        </w:p>
+      </w:body>
+    </w:document>
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("word/document.xml", document_xml)
+
+    spans = _extract_docx_revision_spans(buffer.getvalue())
+
+    assert [(span.type, span.text, span.author, span.date[:10], span.action) for span in spans] == [
+        ("TEXT", "[11.1 通过历史新增", "", "", ""),
+        ("INSERT", "互联网", "陈施霖", "2024-12-23", "新增"),
+        ("TEXT", "吸收的个人存款]指", "", "", ""),
+        ("INSERT", "金融机构", "陈施霖", "2024-12-23", "新增"),
+        ("TEXT", "不通过", "", "", ""),
+        ("DELETE", "银行", "陈施霖", "2024-12-23", "删除"),
+        ("TEXT", "网点、柜面、", "", "", ""),
+        ("DELETE", "开卡", "陈施霖", "2024-12-23", "删除"),
+        ("TEXT", "机等实体渠道", "", "", ""),
+    ]
+    assert "历史删除" not in "".join(span.text for span in spans)
 
 
 def test_pair_document_text_keeps_current_revision_action_metadata():

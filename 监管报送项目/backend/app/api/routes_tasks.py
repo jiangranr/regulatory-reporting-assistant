@@ -55,12 +55,11 @@ from app.services.reporting_change_extractor import ReportingChangeDraft
 from app.services.reporting_impact_analyzer import ReportingImpactDraft, analyze_reporting_impacts
 from app.services.reporting_catalog_loader import load_catalog_from_db
 from app.services.reporting_item_scope import filter_analysis_items
+from app.services.reporting_seed import ReportingSeedCatalog
 from app.services.reporting_ticket_generator import (
     ChildTicketPlan,
     ParentTicketPlan,
-    TicketPlan,
     build_ticket_plan,
-    generate_reporting_ticket_markdown,
 )
 from app.services.impact_review_service import (
     SYSTEM_LABELS,
@@ -201,6 +200,22 @@ def _load_change_signals(value: str) -> list[TableChangeSignalRead]:
     return signals
 
 
+def _profile_aware_changes(
+    document_id: int,
+    document_text: str,
+    seed: ReportingSeedCatalog,
+    session: Session,
+) -> list[ReportingChangeDraft]:
+    profile = session.exec(
+        select(DocumentTaskProfile)
+        .where(DocumentTaskProfile.document_id == document_id)
+        .order_by(DocumentTaskProfile.created_at.desc())
+    ).first()
+    if profile and profile.change_signals and profile.change_signals != "[]":
+        return signals_to_changes(json.loads(profile.change_signals), seed.reporting_items)
+    return extract_reporting_changes(document_text)
+
+
 @router.post("/{task_id}/analyze-impact", response_model=ImpactAnalysisResponse)
 def analyze_task_impact(task_id: int, session: Session = Depends(get_session)) -> ImpactAnalysisResponse:
     task = _get_task_or_404(task_id, session)
@@ -212,19 +227,7 @@ def analyze_task_impact(task_id: int, session: Session = Depends(get_session)) -
     # 不要回退到 build_1104_seed_catalog —— 那样会让 bootstrap 未执行的环境静默吃旧数据。
     seed = load_catalog_from_db(session)
 
-    # 优先使用文档画像中的 change_signals（1104指标变更扫描结果）
-    profile = session.exec(
-        select(DocumentTaskProfile)
-        .where(DocumentTaskProfile.document_id == document.id)
-        .order_by(DocumentTaskProfile.created_at.desc())
-    ).first()
-
-    if profile and profile.change_signals and profile.change_signals != "[]":
-        raw_signals = json.loads(profile.change_signals)
-        changes = signals_to_changes(raw_signals, seed.reporting_items)
-    else:
-        # 兜底：关键词匹配
-        changes = extract_reporting_changes(document.parsed_text)
+    changes = _profile_aware_changes(document.id, document.parsed_text, seed, session)
 
     impacts = analyze_reporting_impacts(changes, seed)
     _replace_reporting_candidates(task_id, changes, session)
@@ -252,8 +255,9 @@ def generate_task_ticket(task_id: int, session: Session = Depends(get_session)) 
 
     impacts = _load_impact_items(task_id, session)
     if not impacts:
-        changes = extract_reporting_changes(document_text)
-        draft_impacts = analyze_reporting_impacts(changes, load_catalog_from_db(session))
+        seed = load_catalog_from_db(session)
+        changes = _profile_aware_changes(task.document_id, document_text, seed, session)
+        draft_impacts = analyze_reporting_impacts(changes, seed)
         _replace_reporting_candidates(task_id, changes, session)
         _replace_reporting_impacts(task_id, draft_impacts, session)
         impacts = [_impact_read_from_draft(item) for item in draft_impacts]
@@ -262,7 +266,12 @@ def generate_task_ticket(task_id: int, session: Session = Depends(get_session)) 
         [_impact_draft_from_read(item) for item in impacts],
         session,
     )
-    change_drafts = _load_change_drafts(task_id, session) or extract_reporting_changes(document_text)
+    change_drafts = _load_change_drafts(task_id, session) or _profile_aware_changes(
+        task.document_id,
+        document_text,
+        load_catalog_from_db(session),
+        session,
+    )
     confirmed_review = _load_confirmed_impact_review(task_id, session)
     if confirmed_review is not None:
         return _generate_review_ticket_plan(
@@ -335,6 +344,7 @@ def get_impact_review(task_id: int, session: Session = Depends(get_session)) -> 
         review=review,
         ai_baseline=baseline,
         stats=compute_stats(review),
+        system_options=_load_data_system_options(session),
     )
 
 
@@ -373,7 +383,24 @@ def reset_impact_review(task_id: int, session: Session = Depends(get_session)) -
         review=review,
         ai_baseline=baseline,
         stats=compute_stats(review),
+        system_options=_load_data_system_options(session),
     )
+
+
+def _load_data_system_options(session: Session) -> list[dict[str, str]]:
+    return [
+        {
+            "system_code": system.system_code,
+            "system_name": system.system_name,
+            "system_type": system.system_type or "",
+            "owner_team": system.owner_team or "",
+        }
+        for system in session.exec(
+            select(DataSystemCatalog)
+            .where(DataSystemCatalog.status == "ACTIVE")
+            .order_by(DataSystemCatalog.system_code)
+        ).all()
+    ]
 
 
 @router.post("/{task_id}/impact-review/confirm", response_model=TicketPlanResponse)
@@ -397,8 +424,9 @@ def confirm_impact_review(
 
     impacts = _load_impact_items(task_id, session)
     if not impacts:
-        changes = extract_reporting_changes(document_text)
-        draft_impacts = analyze_reporting_impacts(changes, load_catalog_from_db(session))
+        seed = load_catalog_from_db(session)
+        changes = _profile_aware_changes(task.document_id, document_text, seed, session)
+        draft_impacts = analyze_reporting_impacts(changes, seed)
         _replace_reporting_candidates(task_id, changes, session)
         _replace_reporting_impacts(task_id, draft_impacts, session)
         impacts = [_impact_read_from_draft(item) for item in draft_impacts]
@@ -406,7 +434,12 @@ def confirm_impact_review(
         [_impact_draft_from_read(item) for item in impacts],
         session,
     )
-    change_drafts = _load_change_drafts(task_id, session) or extract_reporting_changes(document_text)
+    change_drafts = _load_change_drafts(task_id, session) or _profile_aware_changes(
+        task.document_id,
+        document_text,
+        load_catalog_from_db(session),
+        session,
+    )
     return _generate_review_ticket_plan(
         task=task,
         document_text=document_text,
@@ -1079,6 +1112,7 @@ def _replace_reporting_impacts(
 def _impact_read_from_draft(impact: ReportingImpactDraft) -> ReportingImpactItemRead:
     return ReportingImpactItemRead(
         reporting_item_code=impact.reporting_item_code,
+        reporting_item_name=impact.reporting_item_name,
         impact_type=impact.impact_type,
         impacted_reporting_field=impact.impacted_reporting_field,
         impacted_source_fields=impact.impacted_source_fields,
@@ -1092,12 +1126,14 @@ def _impact_read_from_draft(impact: ReportingImpactDraft) -> ReportingImpactItem
         sub_ticket_triggers=impact.sub_ticket_triggers,
         confidence_level=impact.confidence_level,
         risk_level=impact.risk_level,
+        change_axis=impact.change_axis,
     )
 
 
 def _impact_draft_from_read(impact: ReportingImpactItemRead) -> ReportingImpactDraft:
     return ReportingImpactDraft(
         reporting_item_code=impact.reporting_item_code,
+        reporting_item_name=impact.reporting_item_name,
         impact_type=impact.impact_type,
         impacted_reporting_field=impact.impacted_reporting_field,
         impacted_source_fields=impact.impacted_source_fields,
@@ -1111,6 +1147,7 @@ def _impact_draft_from_read(impact: ReportingImpactItemRead) -> ReportingImpactD
         sub_ticket_triggers=impact.sub_ticket_triggers,
         confidence_level=impact.confidence_level,
         risk_level=impact.risk_level,
+        change_axis=impact.change_axis,
     )
 
 

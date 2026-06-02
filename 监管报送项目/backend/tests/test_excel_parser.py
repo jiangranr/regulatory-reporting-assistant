@@ -1,9 +1,10 @@
 from pathlib import Path
 import pytest
-from app.services.excel_parser import parse_excel, ExcelParseResult
+from app.services.excel_parser import parse_excel
 
 G31_XLS = Path("/Users/jiangqiuping/webproject/监管报送项目/一表通/附件4：报表表样和填报说明汇总/2.修订报表（基础类、业务类、支持发展类）/G31/G31(251).xls")
 G31_252_XLS = G31_XLS.with_name("G31(252).xls")
+G01_IV_XLSX = Path("/Users/jiangqiuping/webproject/监管报送项目/一表通/附件4：报表表样和填报说明汇总/2.修订报表（基础类、业务类、支持发展类）/G01_IV/G01_IV（251）.xlsx")
 
 
 @pytest.mark.skipif(not G31_XLS.exists(), reason="G31 file not available")
@@ -66,3 +67,27 @@ def test_parse_g31_252_no_longer_contains_asset_backed_security_rows():
 def test_parse_excel_missing_file():
     with pytest.raises(FileNotFoundError):
         parse_excel(Path("/nonexistent/file.xls"), object_code="G99", section_code="PART_I")
+
+
+@pytest.mark.skipif(not G01_IV_XLSX.exists(), reason="G01_IV file not available")
+def test_parse_g01_iv_xlsx_extracts_business_grid_only():
+    result = parse_excel(G01_IV_XLSX, object_code="G01_IV", section_code="PART_IV")
+
+    row_members = [m for m in result.dimension_members if m["axis"] == "ROW"]
+    col_members = [m for m in result.dimension_members if m["axis"] == "COLUMN"]
+
+    assert len(result.template_cells) == 125
+    assert len(row_members) == 17
+    assert len(col_members) == 3
+    assert [m["member_name"] for m in col_members] == [
+        "A·各项存款",
+        "B·其中：储蓄存款",
+        "C·各项贷款",
+    ]
+    assert len(result.items) == 34
+    assert len(result.item_dimensions) == 34
+    assert not any(item["row_label"] == "附注" for item in result.items)
+    assert not any(item["source_cell_ref"] in {"C6", "D6", "C17", "E17"} for item in result.items)
+    assert any(item["source_cell_ref"] == "E6" for item in result.items)
+    assert any(item["source_cell_ref"] == "E7" for item in result.items)
+    assert any(item["source_cell_ref"] == "D22" for item in result.items)

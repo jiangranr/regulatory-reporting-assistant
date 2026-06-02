@@ -1,515 +1,684 @@
 <template>
-  <div>
-    <!-- 页眉 -->
-    <div class="row between" style="align-items:flex-start;">
-      <div>
-        <div class="h-eyebrow">监管报送治理</div>
-        <h1 class="h-title">指标问答</h1>
-        <p class="h-sub">解释指标口径 · 排查数值异常 · 追溯血缘来源</p>
-      </div>
-      <button class="btn ghost sm" @click="showBootstrap = !showBootstrap" style="margin-top:8px;">
-        数据引导
+  <div class="qa-shell">
+    <header class="qa-topbar">
+      <button class="qa-brand" type="button" @click="$emit('navigate', 'dashboard')">
+        <span class="qa-brand-mark">报</span>
+        <span>监管报送治理</span>
+        <ChevronRight :size="14" />
+        <b>指标问答</b>
       </button>
-    </div>
-
-    <!-- 数据引导面板（折叠） -->
-    <div v-if="showBootstrap" class="card mt-12" style="padding:14px 18px;background:var(--surface-50);">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-        <span style="font-size:13px;color:var(--ink-600);">首次使用需将种子血缘写入数据库，才能启用排查模式。</span>
-        <button class="btn primary sm" @click="runBootstrap" :disabled="bootstrapping">
-          {{ bootstrapping ? '引导中…' : '一键引导 (幂等)' }}
+      <div class="qa-topbar-actions">
+        <div class="qa-global-search">
+          <Search :size="14" />
+          <span>搜索发文、报表、指标、工单</span>
+          <span class="qa-key">⌘K</span>
+        </div>
+        <button class="qa-icon-btn" type="button" title="数据引导" @click="showBootstrap = !showBootstrap">
+          <Database :size="16" />
         </button>
-        <span v-if="bootstrapResult" style="font-size:12px;color:var(--ink-500);">
-          基础血缘 {{ bootstrapResult.basic_lineage }} 条 · G31 详细血缘 {{ bootstrapResult.g31_lineage }} 条 ✓
-        </span>
-        <span v-if="bootstrapError" style="font-size:12px;color:var(--red-500);">{{ bootstrapError }}</span>
+        <button class="qa-icon-btn" type="button" title="通知">
+          <Bell :size="16" />
+        </button>
+        <button class="qa-icon-btn" type="button" title="帮助">
+          <CircleHelp :size="16" />
+        </button>
       </div>
+    </header>
+
+    <div v-if="showBootstrap" class="qa-bootstrap">
+      <span>首次使用排查模式前，需要将种子血缘写入数据库。</span>
+      <button class="qa-bootstrap-btn" type="button" :disabled="bootstrapping" @click="runBootstrap">
+        {{ bootstrapping ? "引导中…" : "一键引导（幂等）" }}
+      </button>
+      <span v-if="bootstrapResult" class="qa-bootstrap-result">
+        基础血缘 {{ bootstrapResult.basic_lineage ?? 0 }} 条 · G31 详细血缘 {{ bootstrapResult.g31_lineage ?? 0 }} 条
+      </span>
+      <span v-if="bootstrapError" class="qa-bootstrap-error">{{ bootstrapError }}</span>
     </div>
 
-    <!-- 示例问题 + 指标选择 -->
-    <div class="row mt-16" style="gap:12px;flex-wrap:wrap;align-items:flex-start;">
-      <!-- 示例 -->
-      <div class="card" style="flex:0 0 auto;padding:14px 18px;min-width:260px;">
-        <div style="font-size:12px;color:var(--ink-500);margin-bottom:8px;">示例问题</div>
-        <div style="display:flex;flex-direction:column;gap:6px;">
-          <button
-            v-for="ex in EXAMPLES"
-            :key="ex.text"
-            class="btn ghost sm"
-            style="text-align:left;white-space:normal;line-height:1.4;"
-            @click="fillExample(ex)"
-          >{{ ex.text }}</button>
+    <div class="qa-body">
+      <aside class="qa-rail" data-testid="qa-session-rail">
+        <div class="qa-rail-head">
+          <div class="qa-rail-eyebrow">指标问答</div>
+          <button class="qa-new-chat" data-testid="qa-new-chat" type="button" @click="startNewChat">
+            <Plus :size="15" />
+            新建对话
+          </button>
         </div>
-      </div>
-
-      <!-- 输入区 -->
-      <div class="card" style="flex:1;min-width:320px;padding:18px;">
-        <div style="display:flex;flex-direction:column;gap:12px;">
-          <div>
-            <label style="font-size:12px;color:var(--ink-500);display:block;margin-bottom:4px;">指标编码（可选，Agent 会自动识别）</label>
-            <div style="display:flex;gap:8px;">
-              <select v-model="selectedObjectCode" @change="loadItems" style="flex:0 0 auto;font-size:13px;padding:6px 10px;border:1px solid var(--line-200);border-radius:4px;">
-                <option value="">全部报表</option>
-                <option value="G31">G31</option>
-                <option value="G24">G24</option>
-                <option value="G21">G21</option>
-                <option value="G25">G25</option>
-                <option value="G27">G27</option>
-              </select>
-              <select v-model="selectedItemCode" style="flex:1;font-size:13px;padding:6px 10px;border:1px solid var(--line-200);border-radius:4px;">
-                <option value="">不指定</option>
-                <option v-for="item in queryableItems" :key="item.item_code" :value="item.item_code">
-                  {{ item.item_code }} · {{ item.item_name }}
-                </option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label style="font-size:12px;color:var(--ink-500);display:block;margin-bottom:4px;">你的问题</label>
-            <textarea
-              v-model="question"
-              placeholder="例：修正久期怎么计算？ / 修正久期这期取值异常，从 3.2 变成 5.8"
-              rows="3"
-              style="width:100%;box-sizing:border-box;padding:8px 10px;font-size:14px;border:1px solid var(--line-200);border-radius:4px;resize:vertical;font-family:inherit;"
-              @keydown.ctrl.enter.prevent="submitQuestion"
-              @keydown.meta.enter.prevent="submitQuestion"
-            />
-          </div>
-
-          <div style="display:flex;align-items:center;gap:10px;">
-            <button class="btn primary" @click="submitQuestion" :disabled="!question.trim() || loading">
-              {{ loading ? '分析中…' : '发送' }}
+        <label class="qa-rail-search">
+          <Search :size="14" />
+          <input v-model="sessionKeyword" placeholder="搜索历史对话…" />
+        </label>
+        <div class="qa-session-list">
+          <div v-for="group in filteredSessions" :key="group.label">
+            <div class="qa-session-group">{{ group.label }}</div>
+            <button
+              v-for="session in group.items"
+              :key="session.id"
+              :class="['qa-session', { active: activeSessionId === session.id }]"
+              type="button"
+              @click="selectSession(session.id)"
+            >
+              <span class="qa-session-row">
+                <span class="qa-session-title">{{ session.title }}</span>
+                <span :class="['qa-session-mode', session.mode]">{{ sessionModeLabel(session.mode) }}</span>
+              </span>
+              <span class="qa-session-meta">{{ session.code }} · {{ session.time }}</span>
             </button>
-            <span style="font-size:12px;color:var(--ink-400);">Ctrl+Enter 发送</span>
-            <button v-if="response" class="btn ghost sm" @click="clearResponse" style="margin-left:auto;">清空</button>
           </div>
         </div>
-      </div>
-    </div>
+      </aside>
 
-    <!-- 错误提示 -->
-    <div v-if="errorMsg" class="card mt-16" style="padding:14px 18px;border-left:3px solid var(--red-400);">
-      <span style="color:var(--red-600);font-size:13px;">{{ errorMsg }}</span>
-    </div>
-
-    <!-- 回答区 -->
-    <div v-if="response || streaming" class="card mt-16" style="padding:20px 24px;">
-      <!-- 标题行 -->
-      <div class="row between" style="margin-bottom:16px;align-items:flex-start;">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <span
-            :class="['badge', (response?.mode ?? streamMeta.mode) === 'explanation' ? 'badge-blue' : 'badge-orange']"
-            style="font-size:11px;"
-          >{{ (response?.mode ?? streamMeta.mode) === 'explanation' ? '解释模式' : '排查模式' }}</span>
-          <span style="font-size:14px;font-weight:600;">
-            {{ response?.item_name || streamMeta.item_name || response?.item_code || streamMeta.item_code }}
-          </span>
-          <span v-if="response?.item_code || streamMeta.item_code" style="font-size:12px;color:var(--ink-400);">
-            {{ response?.item_code || streamMeta.item_code }}
-          </span>
-          <!-- 流式光标 -->
-          <span v-if="streaming" style="display:inline-block;width:8px;height:14px;background:var(--ink-400);animation:blink 1s step-end infinite;border-radius:1px;margin-left:2px;"></span>
-        </div>
-      </div>
-
-      <!-- ── 解释模式 ── -->
-      <template v-if="(response?.mode ?? streamMeta.mode) === 'explanation'">
-        <!-- 通俗解释：流式时用 streamText，完成后用 response -->
-        <div v-if="streamText || response?.plain_explanation" style="margin-bottom:18px;">
-          <div class="section-label">通俗解释</div>
-          <div style="font-size:14px;line-height:1.7;color:var(--ink-700);white-space:pre-wrap;">{{
-            streaming ? streamText : response?.plain_explanation
-          }}<span v-if="streaming && !streamKeypoints.length" class="cursor-blink">▌</span></div>
-        </div>
-
-        <!-- 口径要点 -->
-        <div v-if="(response?.key_points ?? streamKeypoints).length" style="margin-bottom:18px;">
-          <div class="section-label">口径要点</div>
-          <ul style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px;">
-            <li v-for="(pt, i) in (response?.key_points ?? streamKeypoints)" :key="i" style="font-size:13px;color:var(--ink-700);">{{ pt }}</li>
-          </ul>
-        </div>
-
-        <!-- 填报说明原文 -->
-        <div v-if="(response?.instruction_excerpts ?? streamMeta.instruction_excerpts ?? []).length" style="margin-bottom:18px;">
-          <div class="section-label">填报说明原文</div>
-          <div style="display:flex;flex-direction:column;gap:8px;">
-            <div
-              v-for="(ex, i) in (response?.instruction_excerpts ?? streamMeta.instruction_excerpts ?? [])"
-              :key="i"
-              :style="{
-                background: ex.match_type === 'exact' ? '#f0fdf4' : 'var(--surface-50)',
-                borderLeft: ex.match_type === 'exact' ? '3px solid #4ade80' : '3px solid var(--line-200)',
-                padding: '10px 14px',
-                borderRadius: '0 4px 4px 0',
-              }"
-            >
-              <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-                <span v-if="ex.match_type === 'exact'" style="font-size:11px;background:#dcfce7;color:#15803d;padding:1px 5px;border-radius:3px;">精确命中</span>
-                <span v-else-if="ex.match_type === 'keyword'" style="font-size:11px;background:#eff6ff;color:#1d4ed8;padding:1px 5px;border-radius:3px;">关键词</span>
-                <span style="font-size:11px;color:var(--ink-400);">
-                  {{ ex.item_name || ex.source_label }}
-                </span>
-              </div>
-              <div style="font-size:13px;color:var(--ink-700);white-space:pre-wrap;line-height:1.6;">{{ ex.text }}</div>
+      <main class="qa-conversation-column">
+        <section class="qa-context-bar" data-testid="qa-context-bar">
+          <span :class="['qa-context-mode', currentContext.mode]">{{ contextModeLabel(currentContext.mode) }}</span>
+          <div class="qa-context-lock">
+            <LockKeyhole :size="13" />
+            <b>{{ currentContext.item_name }}</b>
+            <span>{{ currentContext.location }}</span>
+            <code>{{ currentContext.item_code }}</code>
+          </div>
+          <span class="qa-context-hint">对话已锁定该指标上下文</span>
+          <div class="qa-context-switch-wrap">
+            <button class="qa-context-switch" data-testid="qa-context-switch" type="button" @click="contextMenuOpen = !contextMenuOpen">
+              <Repeat2 :size="13" />
+              切换上下文
+              <ChevronDown :size="13" />
+            </button>
+            <div v-if="contextMenuOpen" class="qa-context-menu">
+              <button
+                v-for="item in contextOptions"
+                :key="item.item_code"
+                :class="{ active: item.item_code === currentContext.item_code }"
+                type="button"
+                @click="switchContext(item)"
+              >
+                <b>{{ item.item_name }}</b>
+                <span>{{ item.location }}</span>
+                <code>{{ item.item_code }}</code>
+              </button>
             </div>
           </div>
-        </div>
-      </template>
+        </section>
 
-      <!-- ── 排查模式 ── -->
-      <template v-if="(response?.mode ?? streamMeta.mode) === 'anomaly'">
-        <div v-if="(response?.hypotheses ?? streamHypotheses).length" style="margin-bottom:18px;">
-          <div class="section-label">假说清单（按优先级）</div>
-          <div style="display:flex;flex-direction:column;gap:10px;">
-            <div
-              v-for="(h, i) in (response?.hypotheses ?? streamHypotheses)"
-              :key="i"
-              :class="['hypothesis-card', `hypothesis-${h.status}`]"
-            >
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                <span class="hyp-icon">{{ hypothesisIcon(h.status) }}</span>
-                <span style="font-size:14px;font-weight:600;">{{ h.label }}</span>
-                <span :class="['badge', hypothesisBadgeClass(h.status)]" style="font-size:11px;">
-                  {{ hypothesisStatusLabel(h.status) }}
+        <section ref="scrollArea" class="qa-scroll" data-testid="qa-conversation">
+          <div v-if="messages.length === 0" class="qa-empty">
+            <div class="qa-empty-mark"><Sparkles :size="24" /></div>
+            <h1>问我任何报送指标的问题</h1>
+            <p>解释指标口径 · 排查数值异常 · 追溯血缘来源。对话会保留上下文，可连续追问。</p>
+            <div class="qa-empty-grid">
+              <button v-for="example in EXAMPLES" :key="example.text" type="button" @click="sendPreset(example)">
+                <span :class="['qa-empty-icon', example.mode]">
+                  <BookOpen v-if="example.mode === 'explanation'" :size="15" />
+                  <Activity v-else :size="15" />
                 </span>
-              </div>
-              <div style="font-size:13px;color:var(--ink-600);line-height:1.6;white-space:pre-wrap;">{{ h.evidence }}</div>
-              <div v-if="h.action" style="margin-top:6px;font-size:12px;color:var(--ink-500);">
-                建议操作：{{ h.action }}
-              </div>
+                <span>
+                  <b>{{ example.text }}</b>
+                  <small>{{ example.mode === "explanation" ? "解释口径" : "排查异常" }}</small>
+                </span>
+              </button>
             </div>
           </div>
-        </div>
-      </template>
 
-      <!-- ── 通用：血缘字段 ── -->
-      <div v-if="(response?.lineage_fields ?? streamLineage).length" style="margin-bottom:18px;">
-        <div class="section-label">血缘字段</div>
-        <div style="overflow-x:auto;">
-          <table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead>
-              <tr style="border-bottom:1px solid var(--line-100);">
-                <th style="text-align:left;padding:6px 10px;color:var(--ink-500);font-weight:500;">字段</th>
-                <th style="text-align:left;padding:6px 10px;color:var(--ink-500);font-weight:500;">表名</th>
-                <th style="text-align:left;padding:6px 10px;color:var(--ink-500);font-weight:500;">系统</th>
-                <th style="text-align:left;padding:6px 10px;color:var(--ink-500);font-weight:500;">角色</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(f, i) in (response?.lineage_fields ?? streamLineage)" :key="i" style="border-bottom:1px solid var(--line-50);">
-                <td style="padding:6px 10px;">
-                  <span style="font-weight:500;">{{ f.field_name }}</span>
-                  <span style="font-size:11px;color:var(--ink-400);margin-left:6px;">{{ f.field_code }}</span>
-                </td>
-                <td style="padding:6px 10px;color:var(--ink-500);">{{ f.table_name }}</td>
-                <td style="padding:6px 10px;color:var(--ink-500);">{{ f.system_name }}</td>
-                <td style="padding:6px 10px;">
-                  <span :class="['badge', roleClass(f.lineage_role)]" style="font-size:11px;">{{ f.lineage_role }}</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+          <div v-else class="qa-thread">
+            <div class="qa-day-divider">2026-05-31</div>
+            <article v-for="message in messages" :key="message.id" :class="['qa-message', message.role]">
+              <div class="qa-avatar">{{ message.role === "user" ? "江" : "报" }}</div>
+              <div class="qa-message-stack">
+                <div class="qa-message-meta">
+                  <b>{{ message.role === "user" ? "江秋坪" : "报送指标助手" }}</b>
+                  <span>{{ message.time }}</span>
+                </div>
+                <div v-if="message.role === 'user'" class="qa-user-bubble">
+                  <span v-if="message.quote" class="qa-quote-ref">{{ message.quote }}</span>
+                  {{ message.text }}
+                </div>
+                <div v-else class="qa-agent-bubble">
+                  <div v-if="message.loading && !message.response?.plain_explanation" class="qa-thinking">
+                    正在检索口径与血缘
+                    <span><i></i><i></i><i></i></span>
+                  </div>
+                  <template v-else-if="message.response">
+                    <p v-if="message.response.plain_explanation" class="qa-answer">{{ message.response.plain_explanation }}</p>
+                    <div v-if="message.response.error" class="qa-answer-error">{{ message.response.error }}</div>
 
-      <!-- ── 通用：相关工单 ── -->
-      <div v-if="(response?.related_tickets ?? streamMeta.related_tickets ?? []).length">
-        <div class="section-label">相关历史工单</div>
-        <div style="display:flex;flex-direction:column;gap:6px;">
-          <div
-            v-for="t in (response?.related_tickets ?? streamMeta.related_tickets ?? [])"
-            :key="t.ticket_id"
-            style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface-50);border-radius:4px;"
-          >
-            <span style="font-size:12px;color:var(--ink-400);">#{{ t.ticket_id }}</span>
-            <span style="font-size:13px;flex:1;">{{ t.title }}</span>
-            <span class="badge" style="font-size:11px;">{{ t.status }}</span>
+                    <div v-if="message.response.key_points.length" class="qa-keypoints">
+                      <b>口径要点</b>
+                      <ul>
+                        <li v-for="point in message.response.key_points" :key="point">{{ point }}</li>
+                      </ul>
+                    </div>
+
+                    <div class="qa-evidence-list">
+                      <section v-if="message.response.instruction_excerpts.length" :class="['qa-evidence', { open: isEvidenceOpen(message.id, 'instruction') }]">
+                        <button type="button" @click="toggleEvidence(message.id, 'instruction')">
+                          <span class="qa-evidence-icon doc"><FileText :size="13" /></span>
+                          <b>填报说明原文</b>
+                          <small>{{ message.response.instruction_excerpts.length }} 处命中</small>
+                          <ChevronDown :size="15" />
+                        </button>
+                        <div v-if="isEvidenceOpen(message.id, 'instruction')" class="qa-evidence-body">
+                          <div v-for="excerpt in message.response.instruction_excerpts" :key="excerpt.text" class="qa-excerpt">
+                            <span># {{ excerpt.match_type === "exact" ? "精确命中" : "关键词" }}</span>
+                            <b>{{ excerpt.item_name || excerpt.source_label }}</b>
+                            <p>{{ excerpt.text }}</p>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section v-if="message.response.hypotheses.length" :class="['qa-evidence', { open: isEvidenceOpen(message.id, 'hypotheses') }]">
+                        <button type="button" @click="toggleEvidence(message.id, 'hypotheses')">
+                          <span class="qa-evidence-icon data"><TrendingUp :size="13" /></span>
+                          <b>异常排查假说</b>
+                          <small>{{ message.response.hypotheses.length }} 项</small>
+                          <ChevronDown :size="15" />
+                        </button>
+                        <div v-if="isEvidenceOpen(message.id, 'hypotheses')" class="qa-evidence-body qa-hypothesis-list">
+                          <div v-for="hypothesis in message.response.hypotheses" :key="hypothesis.label" :class="['qa-hypothesis', hypothesis.status]">
+                            <b>{{ hypothesisIcon(hypothesis.status) }} {{ hypothesis.label }}</b>
+                            <p>{{ hypothesis.evidence }}</p>
+                            <small v-if="hypothesis.action">建议操作：{{ hypothesis.action }}</small>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section v-if="message.response.lineage_fields.length" :class="['qa-evidence', { open: isEvidenceOpen(message.id, 'lineage') }]">
+                        <button type="button" @click="toggleEvidence(message.id, 'lineage')">
+                          <span class="qa-evidence-icon lineage"><GitFork :size="13" /></span>
+                          <b>血缘来源</b>
+                          <small>{{ message.response.lineage_fields.length }} 节点</small>
+                          <ChevronDown :size="15" />
+                        </button>
+                        <div v-if="isEvidenceOpen(message.id, 'lineage')" class="qa-evidence-body">
+                          <div class="qa-lineage-chain">
+                            <div v-for="field in message.response.lineage_fields" :key="field.field_code">
+                              <small>{{ field.lineage_role }}</small>
+                              <b>{{ field.field_name }}</b>
+                              <code>{{ field.system_name }} · {{ field.table_name }}.{{ field.field_code }}</code>
+                            </div>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section v-if="message.response.related_tickets.length" :class="['qa-evidence', { open: isEvidenceOpen(message.id, 'tickets') }]">
+                        <button type="button" @click="toggleEvidence(message.id, 'tickets')">
+                          <span class="qa-evidence-icon ticket"><ClipboardList :size="13" /></span>
+                          <b>相关历史工单</b>
+                          <small>{{ message.response.related_tickets.length }}</small>
+                          <ChevronDown :size="15" />
+                        </button>
+                        <div v-if="isEvidenceOpen(message.id, 'tickets')" class="qa-evidence-body qa-ticket-list">
+                          <div v-for="ticket in message.response.related_tickets" :key="ticket.ticket_id">
+                            <b>{{ ticket.title }}</b>
+                            <code>#{{ ticket.ticket_id }}</code>
+                            <span>{{ ticket.status }}</span>
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+
+                    <div v-if="!message.loading" class="qa-message-actions">
+                      <button type="button" @click="copyAnswer(message)">
+                        <Check v-if="copiedMessageId === message.id" :size="14" />
+                        <Copy v-else :size="14" />
+                        {{ copiedMessageId === message.id ? "已复制" : "复制" }}
+                      </button>
+                      <button type="button" @click="quoteAnswer(message)">
+                        <Reply :size="14" />
+                        引用追问
+                      </button>
+                      <span></span>
+                      <button :class="{ active: feedback[message.id] === 'good' }" type="button" @click="toggleFeedback(message.id, 'good')">
+                        <ThumbsUp :size="14" />
+                        有用
+                      </button>
+                      <button :class="{ active: feedback[message.id] === 'bad' }" type="button" @click="toggleFeedback(message.id, 'bad')">
+                        <ThumbsDown :size="14" />
+                        无用
+                      </button>
+                    </div>
+
+                    <div v-if="!message.loading" class="qa-followups">
+                      <b>建议追问</b>
+                      <button v-for="followup in suggestedFollowups(message.response)" :key="followup" type="button" @click="sendQuestion(followup)">
+                        <CornerDownRight :size="13" />
+                        {{ followup }}
+                      </button>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </article>
           </div>
-        </div>
-      </div>
+        </section>
 
-      <!-- 无内容兜底 -->
-      <div v-if="response?.error" style="color:var(--red-600);font-size:13px;">{{ response.error }}</div>
+        <footer class="qa-input-dock" data-testid="qa-composer">
+          <div class="qa-composer">
+            <div v-if="quotedText" class="qa-quoted">
+              <span></span>
+              <p>引用 · {{ truncate(quotedText, 90) }}</p>
+              <button type="button" @click="quotedText = ''"><X :size="14" /></button>
+            </div>
+            <textarea
+              ref="composerInput"
+              v-model="composerText"
+              data-testid="qa-composer-input"
+              rows="1"
+              placeholder="继续追问，或换一个指标问题…（对话会保留上下文）"
+              @input="resizeComposer"
+              @keydown="handleComposerKeydown"
+            />
+            <div class="qa-composer-footer">
+              <button type="button"><Paperclip :size="14" />关联报表</button>
+              <button type="button" @click="contextMenuOpen = true"><Hash :size="14" />指定指标</button>
+              <span></span>
+              <small><b>Enter</b> 发送 · <b>Shift+Enter</b> 换行</small>
+              <button class="qa-send" data-testid="qa-send" type="button" :disabled="!composerText.trim() || sending" @click="sendQuestion()">
+                <ArrowUp :size="15" />
+                {{ sending ? "分析中" : "发送" }}
+              </button>
+            </div>
+          </div>
+        </footer>
+      </main>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
-import { apiClient } from "@/api/client";
-import type { QAResponse, QAQueryableItem } from "@/types/api";
+import { computed, nextTick, onMounted, ref } from "vue";
+import {
+  Activity,
+  ArrowUp,
+  Bell,
+  BookOpen,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CircleHelp,
+  ClipboardList,
+  Copy,
+  CornerDownRight,
+  Database,
+  FileText,
+  GitFork,
+  Hash,
+  LockKeyhole,
+  Paperclip,
+  Plus,
+  Repeat2,
+  Reply,
+  Search,
+  Sparkles,
+  ThumbsDown,
+  ThumbsUp,
+  TrendingUp,
+  X,
+} from "lucide-vue-next";
 
-// ── 示例 ──────────────────────────────────────────────────────────────────────
-const EXAMPLES = [
-  { text: "G31 修正久期怎么计算？", itemCode: "G31.PART_I.1_0.C_修正久期" },
-  { text: "G31 债券投资余额口径是什么？", itemCode: "G31.PART_I.BOND_INVESTMENT_BALANCE" },
-  { text: "修正久期这期取值异常，从 3.2 变成 5.8", itemCode: "G31.PART_I.1_0.C_修正久期" },
-  { text: "G24 最大百家同业融入余额取值异常", itemCode: "G24.MAIN.INTERBANK_BORROWING_BAL_TOP100" },
+import { apiClient } from "@/api/client";
+import type { HypothesisStatus, QAQueryableItem, QAResponse } from "@/types/api";
+
+defineEmits<{ navigate: [page: "dashboard"] }>();
+
+type ContextMode = "explanation" | "anomaly";
+type MessageRole = "user" | "agent";
+type FeedbackValue = "good" | "bad";
+
+interface IndicatorContext extends QAQueryableItem {
+  location: string;
+  mode: ContextMode;
+}
+
+interface ChatMessage {
+  id: string;
+  role: MessageRole;
+  time: string;
+  text?: string;
+  quote?: string;
+  loading?: boolean;
+  response?: QAResponse;
+}
+
+interface SessionItem {
+  id: string;
+  title: string;
+  mode: "explanation" | "anomaly" | "lineage";
+  code: string;
+  time: string;
+}
+
+const FALLBACK_CONTEXTS: IndicatorContext[] = [
+  { item_name: "修正久期", item_code: "G31.PART_I.1_0.C_修正久期", location: "1 行 · C 列", mode: "explanation" },
+  { item_name: "债券投资余额", item_code: "G31.PART_I.BOND_INVESTMENT_BALANCE", location: "3 行 · C 列", mode: "explanation" },
+  { item_name: "最大百家同业融入余额", item_code: "G24.MAIN.INTERBANK_BORROWING_BAL_TOP100", location: "5 行 · B 列", mode: "anomaly" },
+  { item_name: "流动性缺口", item_code: "G33.PART_I.7_0.D", location: "7 行 · D 列", mode: "explanation" },
 ];
 
-// ── 状态 ──────────────────────────────────────────────────────────────────────
-const question = ref("");
-const selectedObjectCode = ref("");
-const selectedItemCode = ref("");
+const EXAMPLES = [
+  { text: "G31 修正久期怎么计算？", itemCode: "G31.PART_I.1_0.C_修正久期", mode: "explanation" as const },
+  { text: "G31 债券投资余额口径是什么？", itemCode: "G31.PART_I.BOND_INVESTMENT_BALANCE", mode: "explanation" as const },
+  { text: "修正久期这期取值异常，从 3.2 变成 5.8", itemCode: "G31.PART_I.1_0.C_修正久期", mode: "anomaly" as const },
+  { text: "G24 最大百家同业融入余额取值异常", itemCode: "G24.MAIN.INTERBANK_BORROWING_BAL_TOP100", mode: "anomaly" as const },
+];
+
+const SESSION_GROUPS: Array<{ label: string; items: SessionItem[] }> = [];
+
 const queryableItems = ref<QAQueryableItem[]>([]);
-const loading = ref(false);
-const response = ref<QAResponse | null>(null);
-const errorMsg = ref("");
-
-// 流式状态
-const streaming = ref(false);
-const streamText = ref("");
-const streamKeypoints = ref<string[]>([]);
-const streamHypotheses = ref<Array<{label:string;status:string;evidence:string;action:string}>>([]);
-const streamLineage = ref<QAResponse["lineage_fields"]>([]);
-const streamMeta = ref<{
-  mode: string;
-  item_code: string;
-  item_name: string;
-  instruction_excerpts: QAResponse["instruction_excerpts"];
-  related_tickets: QAResponse["related_tickets"];
-}>({ mode: "explanation", item_code: "", item_name: "", instruction_excerpts: [], related_tickets: [] });
-
+const currentContext = ref<IndicatorContext>({ ...FALLBACK_CONTEXTS[0] });
+const contextMenuOpen = ref(false);
+const sessionKeyword = ref("");
+const activeSessionId = ref("");
+const messages = ref<ChatMessage[]>(createSeedMessages());
+const composerText = ref("");
+const quotedText = ref("");
+const sending = ref(false);
+const scrollArea = ref<HTMLElement | null>(null);
+const composerInput = ref<HTMLTextAreaElement | null>(null);
+const evidenceOpen = ref(new Set(["a1-instruction", "a2-hypotheses"]));
+const copiedMessageId = ref("");
+const feedback = ref<Record<string, FeedbackValue | undefined>>({});
 const showBootstrap = ref(false);
 const bootstrapping = ref(false);
-const bootstrapResult = ref<Record<string, number> | null>(null);
+const bootstrapResult = ref<Record<string, unknown> | null>(null);
 const bootstrapError = ref("");
+let messageSequence = 100;
 
-// ── 初始化 ────────────────────────────────────────────────────────────────────
-onMounted(() => loadItems());
+const contextOptions = computed<IndicatorContext[]>(() => {
+  const resolved = queryableItems.value.map((item, index) => ({
+    ...item,
+    location: inferLocation(item.item_code, index),
+    mode: inferMode(item.item_name),
+  }));
+  const merged = [...FALLBACK_CONTEXTS, ...resolved];
+  return merged.filter((item, index) => merged.findIndex((candidate) => candidate.item_code === item.item_code) === index);
+});
 
-async function loadItems() {
+const filteredSessions = computed(() => {
+  const keyword = sessionKeyword.value.trim().toLowerCase();
+  if (!keyword) return SESSION_GROUPS;
+  return SESSION_GROUPS
+    .map((group) => ({ ...group, items: group.items.filter((item) => `${item.title} ${item.code}`.toLowerCase().includes(keyword)) }))
+    .filter((group) => group.items.length);
+});
+
+onMounted(async () => {
   try {
-    queryableItems.value = await apiClient.listQueryableItems(selectedObjectCode.value || undefined);
+    queryableItems.value = await apiClient.listQueryableItems();
   } catch {
-    // 加载失败不影响主流程
+    queryableItems.value = [];
   }
+  await scrollToBottom();
+});
+
+function startNewChat() {
+  activeSessionId.value = "";
+  messages.value = [];
+  quotedText.value = "";
+  composerText.value = "";
 }
 
-// ── 操作 ──────────────────────────────────────────────────────────────────────
-function fillExample(ex: { text: string; itemCode?: string }) {
-  question.value = ex.text;
-  if (ex.itemCode) selectedItemCode.value = ex.itemCode;
+function selectSession(sessionId: string) {
+  activeSessionId.value = sessionId;
 }
 
-async function submitQuestion() {
-  const q = question.value.trim();
-  if (!q || loading.value) return;
+function switchContext(context: IndicatorContext) {
+  currentContext.value = { ...context };
+  contextMenuOpen.value = false;
+}
 
-  // 重置所有状态
-  loading.value = true;
-  streaming.value = false;
-  errorMsg.value = "";
-  response.value = null;
-  streamText.value = "";
-  streamKeypoints.value = [];
-  streamHypotheses.value = [];
-  streamLineage.value = [];
-  streamMeta.value = { mode: "explanation", item_code: "", item_name: "", instruction_excerpts: [], related_tickets: [] };
+function sendPreset(example: (typeof EXAMPLES)[number]) {
+  const context = contextOptions.value.find((item) => item.item_code === example.itemCode);
+  if (context) switchContext({ ...context, mode: example.mode });
+  void sendQuestion(example.text);
+}
 
-  const params = new URLSearchParams({ question: q });
-  if (selectedItemCode.value) params.set("item_code", selectedItemCode.value);
+async function sendQuestion(preset?: string) {
+  const text = (preset ?? composerText.value).trim();
+  if (!text || sending.value) return;
+
+  const quote = quotedText.value;
+  composerText.value = "";
+  quotedText.value = "";
+  sending.value = true;
+
+  const userMessage: ChatMessage = { id: nextId("u"), role: "user", time: currentTime(), text, quote };
+  const agentMessage: ChatMessage = { id: nextId("a"), role: "agent", time: currentTime(), loading: true, response: blankResponse() };
+  messages.value.push(userMessage, agentMessage);
+  await scrollToBottom();
+
+  const params = new URLSearchParams({ question: text });
+  if (currentContext.value.item_code) params.set("item_code", currentContext.value.item_code);
 
   try {
-    const res = await fetch(`/api/indicator-qa/ask/stream?${params}`, { method: "POST" });
-    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-
-    loading.value = false;
-    streaming.value = true;
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-
-      // 按 SSE 行解析（data: {...}\n\n）
-      const lines = buf.split("\n");
-      buf = lines.pop() ?? "";          // 末尾不完整行留着
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        try {
-          const evt = JSON.parse(line.slice(6));
-          if (evt.type === "meta") {
-            streamMeta.value = evt;
-          } else if (evt.type === "token") {
-            streamText.value += evt.text;
-          } else if (evt.type === "keypoints") {
-            streamKeypoints.value = evt.data ?? [];
-          } else if (evt.type === "hypotheses") {
-            streamHypotheses.value = evt.data ?? [];
-          } else if (evt.type === "lineage") {
-            streamLineage.value = evt.data ?? [];
-          } else if (evt.type === "done") {
-            // 固化到 response，防止 streaming=false 后内容消失
-            response.value = {
-              mode: streamMeta.value.mode as "explanation" | "anomaly",
-              item_code: streamMeta.value.item_code,
-              item_name: streamMeta.value.item_name,
-              instruction_excerpts: streamMeta.value.instruction_excerpts ?? [],
-              plain_explanation: streamText.value,
-              key_points: streamKeypoints.value,
-              hypotheses: streamHypotheses.value,
-              lineage_fields: streamLineage.value ?? [],
-              related_tickets: streamMeta.value.related_tickets ?? [],
-              error: "",
-            };
-            streaming.value = false;
-          } else if (evt.type === "error") {
-            errorMsg.value = evt.message ?? "未知错误";
-            streaming.value = false;
-          }
-        } catch { /* 忽略非法行 */ }
-      }
-    }
-    // reader 自然结束兜底：确保内容已固化
-    if (!response.value && (streamText.value || streamMeta.value.item_name)) {
-      response.value = {
-        mode: streamMeta.value.mode as "explanation" | "anomaly",
-        item_code: streamMeta.value.item_code,
-        item_name: streamMeta.value.item_name,
-        instruction_excerpts: streamMeta.value.instruction_excerpts ?? [],
-        plain_explanation: streamText.value,
-        key_points: streamKeypoints.value,
-        hypotheses: streamHypotheses.value,
-        lineage_fields: streamLineage.value ?? [],
-        related_tickets: streamMeta.value.related_tickets ?? [],
-        error: "",
-      };
-    }
-    streaming.value = false;
-
-  } catch (e: unknown) {
-    errorMsg.value = e instanceof Error ? e.message : "请求失败，请检查后端服务是否正常";
-    loading.value = false;
-    streaming.value = false;
+    const response = await fetch(`/api/indicator-qa/ask/stream?${params}`, { method: "POST" });
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    await consumeStream(response, agentMessage);
+  } catch (error: unknown) {
+    agentMessage.response = { ...blankResponse(), error: error instanceof Error ? error.message : "请求失败，请检查后端服务是否正常" };
+  } finally {
+    agentMessage.loading = false;
+    sending.value = false;
+    await scrollToBottom();
   }
 }
 
-function clearResponse() {
-  response.value = null;
-  errorMsg.value = "";
-  streaming.value = false;
-  streamText.value = "";
-  streamKeypoints.value = [];
-  streamHypotheses.value = [];
-  streamLineage.value = [];
-  streamMeta.value = { mode: "explanation", item_code: "", item_name: "", instruction_excerpts: [], related_tickets: [] };
+async function consumeStream(response: Response, message: ChatMessage) {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) consumeLine(line, message);
+    await scrollToBottom();
+  }
+  if (buffer) consumeLine(buffer, message);
+}
+
+function consumeLine(line: string, message: ChatMessage) {
+  if (!line.startsWith("data: ")) return;
+  try {
+    const event = JSON.parse(line.slice(6));
+    const response = message.response ?? blankResponse();
+    if (event.type === "meta") {
+      response.mode = event.mode ?? "explanation";
+      response.item_code = event.item_code ?? "";
+      response.item_name = event.item_name ?? "";
+      response.instruction_excerpts = event.instruction_excerpts ?? [];
+      response.related_tickets = event.related_tickets ?? [];
+    } else if (event.type === "token") {
+      response.plain_explanation += event.text ?? "";
+    } else if (event.type === "keypoints") {
+      response.key_points = event.data ?? [];
+    } else if (event.type === "hypotheses") {
+      response.hypotheses = event.data ?? [];
+    } else if (event.type === "lineage") {
+      response.lineage_fields = event.data ?? [];
+    } else if (event.type === "error") {
+      response.error = event.message ?? "未知错误";
+    }
+    message.response = response;
+  } catch {
+    // Ignore malformed SSE lines without interrupting an otherwise usable answer.
+  }
+}
+
+function createSeedMessages(): ChatMessage[] {
+  return [
+    { id: "u1", role: "user", time: "11:42", text: "G31 修正久期怎么计算？" },
+    { id: "a1", role: "agent", time: "11:42", response: seedExplanation() },
+    { id: "u2", role: "user", time: "11:44", text: "那这期从 3.2 变成 5.8，正常吗？" },
+    { id: "a2", role: "agent", time: "11:44", response: seedAnomaly() },
+  ];
+}
+
+function seedExplanation(): QAResponse {
+  return {
+    ...blankResponse(),
+    item_code: FALLBACK_CONTEXTS[0].item_code,
+    item_name: "修正久期",
+    plain_explanation: "G31 的修正久期按填报说明计算：MD = −(dP/P)/dy = D/(1+y/k)。其中 D 是麦考利久期，P 是债券估值（价格），dP 是价格变动，y 是到期收益率，dy 是到期收益率变动，k 是每年复利频率。\n\n单券直接套用公式；若填报的是债券投资组合，通常按各债券期末估值占比，对单券修正久期加权，得到组合修正久期。",
+    instruction_excerpts: [{
+      text: "[C.修正久期]：衡量单笔债券或债券投资组合估值（价格）对到期收益率变化的敏感度指标，计算公式为 MD=−(dP/P)/dy=D/(1+y/k)。",
+      source_label: "G31 填报说明",
+      item_name: "修正久期",
+      match_type: "exact",
+    }],
+    related_tickets: [
+      { ticket_id: 20240911, title: "G31 修正久期口径与估值系统不一致", status: "已解决" },
+      { ticket_id: 20250203, title: "组合久期加权未剔除到期券", status: "已解决" },
+    ],
+  };
+}
+
+function seedAnomaly(): QAResponse {
+  return {
+    ...blankResponse(),
+    mode: "anomaly",
+    item_code: FALLBACK_CONTEXTS[0].item_code,
+    item_name: "修正久期",
+    plain_explanation: "本期修正久期从上期 3.2 跳到 5.8，环比 +81%，确实超出常规波动区间。结合血缘与持仓，建议先核对持仓结构变化，再回溯中间层加工逻辑。",
+    hypotheses: [
+      { label: "久期结构变化", status: "checked", evidence: "若本期新增长久期利率债或赎回短久期券，组合加权久期会被显著抬升。", action: "先核对本期新增持仓明细。" },
+      { label: "取数口径错位", status: "uncertain", evidence: "中间层可能误用了麦考利久期 D，而非修正久期 MD。", action: "回溯 dm_g31_risk.modified_duration 加工逻辑。" },
+    ],
+    lineage_fields: [
+      { field_name: "麦考利久期", field_code: "macaulay_duration", table_name: "bond_valuation", system_name: "估值系统 FVS", lineage_role: "SOURCE_FIELD" },
+      { field_name: "修正久期加工", field_code: "modified_duration", table_name: "dm_g31_risk", system_name: "风险加工层", lineage_role: "PROCESS_FIELD" },
+      { field_name: "G31 修正久期", field_code: "modified_duration", table_name: "rpt_g31_part_i", system_name: "监管报送", lineage_role: "REPORT_FIELD" },
+    ],
+    related_tickets: [{ ticket_id: 20240911, title: "G31 修正久期口径与估值系统不一致（误用麦考利久期）", status: "已解决" }],
+  };
+}
+
+function blankResponse(): QAResponse {
+  return {
+    mode: "explanation",
+    item_code: "",
+    item_name: "",
+    instruction_excerpts: [],
+    plain_explanation: "",
+    key_points: [],
+    hypotheses: [],
+    lineage_fields: [],
+    related_tickets: [],
+    error: "",
+  };
+}
+
+function suggestedFollowups(response: QAResponse): string[] {
+  if (response.mode === "anomaly") return ["帮我生成一张排查工单", "查看本期新增持仓明细", "中间层加工 SQL 是什么？"];
+  return ["组合修正久期怎么加权？", "D（麦考利久期）从哪个系统取数？", "这个口径和 G33 的久期一致吗？"];
+}
+
+function toggleEvidence(messageId: string, type: string) {
+  const key = `${messageId}-${type}`;
+  const next = new Set(evidenceOpen.value);
+  next.has(key) ? next.delete(key) : next.add(key);
+  evidenceOpen.value = next;
+}
+
+function isEvidenceOpen(messageId: string, type: string) {
+  return evidenceOpen.value.has(`${messageId}-${type}`);
+}
+
+async function copyAnswer(message: ChatMessage) {
+  const text = message.response?.plain_explanation ?? "";
+  try {
+    await navigator.clipboard?.writeText(text);
+  } catch {
+    // Clipboard may be unavailable in restricted browser contexts.
+  }
+  copiedMessageId.value = message.id;
+  window.setTimeout(() => {
+    if (copiedMessageId.value === message.id) copiedMessageId.value = "";
+  }, 1600);
+}
+
+function quoteAnswer(message: ChatMessage) {
+  quotedText.value = message.response?.plain_explanation ?? "";
+  composerInput.value?.focus();
+}
+
+function toggleFeedback(messageId: string, value: FeedbackValue) {
+  feedback.value[messageId] = feedback.value[messageId] === value ? undefined : value;
+}
+
+function handleComposerKeydown(event: KeyboardEvent) {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    void sendQuestion();
+  }
+}
+
+function resizeComposer() {
+  const input = composerInput.value;
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+}
+
+async function scrollToBottom() {
+  await nextTick();
+  if (scrollArea.value) scrollArea.value.scrollTop = scrollArea.value.scrollHeight;
 }
 
 async function runBootstrap() {
   bootstrapping.value = true;
-  bootstrapError.value = "";
   bootstrapResult.value = null;
+  bootstrapError.value = "";
   try {
-    const result = await apiClient.bootstrapAll();
-    bootstrapResult.value = result as Record<string, number>;
-    await loadItems();
-  } catch (e: unknown) {
-    bootstrapError.value = e instanceof Error ? e.message : "引导失败";
+    bootstrapResult.value = await apiClient.bootstrapAll();
+    queryableItems.value = await apiClient.listQueryableItems();
+  } catch (error: unknown) {
+    bootstrapError.value = error instanceof Error ? error.message : "引导失败";
   } finally {
     bootstrapping.value = false;
   }
 }
 
-// ── 展示辅助 ──────────────────────────────────────────────────────────────────
-function hypothesisIcon(status: string) {
-  if (status === "checked") return "✅";
-  if (status === "uncertain") return "⚠️";
-  return "❌";
+function inferLocation(itemCode: string, index: number) {
+  const match = itemCode.match(/\.(\d+)_\d+\.([A-Z])/);
+  return match ? `${match[1]} 行 · ${match[2]} 列` : `${index + 1} 行`;
 }
 
-function hypothesisBadgeClass(status: string) {
-  if (status === "checked") return "badge-green";
-  if (status === "uncertain") return "badge-orange";
-  return "badge-gray";
+function inferMode(itemName: string): ContextMode {
+  return itemName.includes("异常") ? "anomaly" : "explanation";
 }
 
-function hypothesisStatusLabel(status: string) {
-  if (status === "checked") return "有数据，必查";
-  if (status === "uncertain") return "条件具备才展示";
-  return "AI 无法分析";
+function contextModeLabel(mode: ContextMode) {
+  return mode === "anomaly" ? "排查模式" : "解释模式";
 }
 
-function roleClass(role: string) {
-  if (role === "SOURCE_FIELD") return "badge-blue";
-  if (role === "FILTER_FIELD") return "badge-orange";
-  if (role === "REPORT_FIELD") return "badge-green";
-  return "badge-gray";
+function sessionModeLabel(mode: SessionItem["mode"]) {
+  if (mode === "anomaly") return "排查";
+  if (mode === "lineage") return "血缘";
+  return "解释";
+}
+
+function hypothesisIcon(status: HypothesisStatus) {
+  if (status === "checked") return "✓";
+  if (status === "uncertain") return "!";
+  return "×";
+}
+
+function nextId(prefix: string) {
+  messageSequence += 1;
+  return `${prefix}${messageSequence}`;
+}
+
+function currentTime() {
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+}
+
+function truncate(value: string, length: number) {
+  return value.length > length ? `${value.slice(0, length)}…` : value;
 }
 </script>
 
-<style scoped>
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-
-.cursor-blink {
-  display: inline-block;
-  animation: blink 0.8s step-end infinite;
-  color: var(--ink-500);
-  font-weight: 300;
-  margin-left: 1px;
-}
-
-.section-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--ink-400);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  margin-bottom: 8px;
-}
-
-.hypothesis-card {
-  padding: 12px 16px;
-  border-radius: 6px;
-  border: 1px solid var(--line-100);
-}
-
-.hypothesis-checked {
-  background: #f0fdf4;
-  border-color: #86efac;
-}
-
-.hypothesis-uncertain {
-  background: #fffbeb;
-  border-color: #fde68a;
-}
-
-.hypothesis-out_of_scope {
-  background: var(--surface-50);
-  border-color: var(--line-100);
-}
-
-.hyp-icon {
-  font-size: 16px;
-  line-height: 1;
-}
-
-.badge-green {
-  background: #dcfce7;
-  color: #15803d;
-}
-
-.badge-orange {
-  background: #fff7ed;
-  color: #c2410c;
-}
-
-.badge-blue {
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-
-.badge-gray {
-  background: var(--surface-100);
-  color: var(--ink-500);
-}
-</style>
+<style src="./indicator-qa.css" scoped></style>

@@ -14,6 +14,8 @@ import type {
   TaskWorkflow,
   TicketPlanResponse,
   ImpactItem,
+  HallucinationMetrics,
+  SignalReviewResponse,
   TripletUploadResponse,
   QAResponse,
   QAQueryableItem,
@@ -40,6 +42,14 @@ export interface ApiClient {
   resetImpactReview(taskId: number): Promise<ImpactReviewResponse>;
   profileDocument(documentId: number): Promise<DocumentTaskProfile>;
   getDocumentProfile(documentId: number): Promise<DocumentTaskProfile | null>;
+  getDocumentHallucinationMetrics(documentId: number): Promise<HallucinationMetrics>;
+  reviewDocumentSignal(
+    documentId: number,
+    signalIndex: number,
+    action: "ACCEPTED" | "REJECTED" | "CORRECTED",
+    reviewer?: string,
+    comment?: string,
+  ): Promise<SignalReviewResponse>;
   analyzeInstructionChanges(documentId: number, objectCode?: string): Promise<InstructionChangeAnalysis>;
   analyzeImpact(taskId: number): Promise<ImpactItem[]>;
   generateTicket(taskId: number): Promise<TicketPlanResponse>;
@@ -130,6 +140,14 @@ export function createApiClient(baseUrl = "/api", fetcher: typeof fetch = fetch)
       request<DocumentTaskProfile>(`/documents/${documentId}/profile`, { method: "POST" }),
     getDocumentProfile: (documentId) =>
       request<DocumentTaskProfile | null>(`/documents/${documentId}/profile`),
+    getDocumentHallucinationMetrics: (documentId) =>
+      request<HallucinationMetrics>(`/documents/${documentId}/hallucination-metrics`),
+    reviewDocumentSignal: (documentId, signalIndex, action, reviewer = "demo_user", comment = "") =>
+      request<SignalReviewResponse>(`/documents/${documentId}/signals/${signalIndex}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, reviewer, comment }),
+      }),
     analyzeInstructionChanges: (documentId, objectCode = "G31") =>
       request<InstructionChangeAnalysis>(
         `/documents/${documentId}/analyze-instruction-changes?object_code=${objectCode}`,

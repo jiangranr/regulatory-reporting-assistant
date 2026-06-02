@@ -164,12 +164,17 @@
                 :key="row.key"
                 class="evidence-row"
               >
-                <span v-if="row.action" class="evidence-meta">
+                <span
+                  v-if="row.action"
+                  :class="['evidence-meta', row.action === '新增' ? 'evidence-meta-add' : row.action === '删除' ? 'evidence-meta-del' : '']"
+                >
                   {{ row.action }} · {{ row.author || "未知作者" }} · {{ row.date || "日期未知" }}
                 </span>
                 <span class="evidence-body">
                   <template v-for="(segment, index) in row.segments" :key="index">
-                    <mark v-if="segment.highlighted" class="evidence-highlight">{{ segment.text }}</mark>
+                    <ins v-if="segment.operation === 'ADD'" class="evidence-ins" :title="segment.title">{{ segment.text }}</ins>
+                    <del v-else-if="segment.operation === 'DELETE'" class="evidence-del" :title="segment.title">{{ segment.text }}</del>
+                    <mark v-else-if="segment.highlighted" class="evidence-highlight">{{ segment.text }}</mark>
                     <span v-else>{{ segment.text }}</span>
                   </template>
                 </span>
@@ -178,6 +183,18 @@
             <div class="quote" v-else>
               <span class="loc">暂无原文摘录</span>
               <span style="color:var(--ink-400);">请在文档画像步骤扫描后获取更详细的证据。</span>
+            </div>
+          </div>
+          <div v-if="evidenceRevisionActions.length" class="evidence-revision-audit">
+            <h4>Word 修订动作</h4>
+            <div class="evidence-revision-list">
+              <div v-for="action in evidenceRevisionActions" :key="action.key" class="evidence-revision-item">
+                <span :class="['evidence-revision-operation', action.action === '新增' ? 'add' : 'del']">
+                  {{ action.action }}
+                </span>
+                <span>{{ action.text }}</span>
+                <small>{{ [action.author, action.date].filter(Boolean).join(" · ") }}</small>
+              </div>
             </div>
           </div>
 
@@ -279,7 +296,7 @@
 import { computed, ref, watch } from "vue";
 import type { ConceptMatchHit, TaskWorkflow, TableChangeSignal, TableChangeType } from "@/types/api";
 import LineageGraph, { type LineageNode, type LineageEdge } from "@/components/LineageGraph.vue";
-import { formatReadableEvidence, normalizeEvidenceText, type ReadableEvidenceRow } from "@/utils/evidence";
+import { formatReadableEvidence, normalizeEvidenceText, revisionSpansToRows, type ReadableEvidenceRow } from "@/utils/evidence";
 
 const props = withDefaults(defineProps<{
   workflow: TaskWorkflow | null;
@@ -331,7 +348,7 @@ interface CatalogTable {
 
 // Build catalog from change_signals in profile
 const catalog = computed<CatalogTable[]>(() => {
-  const signals = props.workflow?.document_profile?.change_signals ?? [];
+  const signals = dedupeCatalogSignals(props.workflow?.document_profile?.change_signals ?? []);
   const byTable = new Map<string, TableChangeSignal[]>();
   for (const s of signals) {
     if (!byTable.has(s.table_code)) byTable.set(s.table_code, []);
@@ -387,7 +404,12 @@ const catalog = computed<CatalogTable[]>(() => {
   });
 });
 
-const hitCount = computed(() => props.workflow?.document_profile?.change_signals.length ?? 0);
+const hitCount = computed(() =>
+  catalog.value.reduce(
+    (sum, table) => sum + table.items.reduce((tableSum, item) => tableSum + item.children.length, 0),
+    0,
+  ),
+);
 const hasImpactAnalysis = computed(() =>
   Boolean(
     props.workflow?.impact_items?.length ||
@@ -396,6 +418,97 @@ const hasImpactAnalysis = computed(() =>
       props.workflow?.field_mappings?.length,
   ),
 );
+
+function dedupeCatalogSignals(signals: TableChangeSignal[]): TableChangeSignal[] {
+  const byKey = new Map<string, TableChangeSignal>();
+  const order: string[] = [];
+
+  for (const signal of signals) {
+    const key = catalogSignalKey(signal);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, signal);
+      order.push(key);
+      continue;
+    }
+    byKey.set(key, mergeCatalogSignals(existing, signal));
+  }
+
+  return order.map((key) => byKey.get(key)!).filter(Boolean);
+}
+
+function catalogSignalKey(signal: TableChangeSignal): string {
+  const tableCode = signal.table_code || "UNKNOWN";
+  if (signal.business_signal_id) return `${tableCode}::id:${signal.business_signal_id}`;
+
+  const itemCodes = (signal.item_codes ?? []).map((item) => normaliseForMatch(item)).filter(Boolean).sort();
+  if (itemCodes.length) return `${tableCode}::items:${itemCodes.join("|")}`;
+
+  if (signal.matched_item_code) {
+    return `${tableCode}::matched:${normaliseForMatch(signal.matched_item_code)}`;
+  }
+
+  const compositeCodes = (signal.composite_match?.reporting_item_codes ?? [])
+    .map((item) => normaliseForMatch(item))
+    .filter(Boolean)
+    .sort();
+  if (compositeCodes.length) return `${tableCode}::composite:${compositeCodes.join("|")}`;
+
+  const sectionKey = normaliseForMatch(signal.section_hint);
+  const indicatorKey =
+    normaliseForMatch(displayIndicatorName(signal.indicator_hint)) ||
+    normaliseForMatch(signal.indicator_hint) ||
+    normaliseForMatch(signal.section_hint);
+  return `${tableCode}::hint:${sectionKey}:${indicatorKey}`;
+}
+
+function mergeCatalogSignals(left: TableChangeSignal, right: TableChangeSignal): TableChangeSignal {
+  const primary = catalogSignalPriority(right) > catalogSignalPriority(left) ? right : left;
+  return {
+    ...primary,
+    evidence_text: joinUniqueTexts([left.evidence_text, right.evidence_text]),
+    confidence: Math.max(left.confidence || 0, right.confidence || 0),
+    candidate_sources: mergeCatalogCandidateSources(left, right),
+    revision_actions: mergeUniqueRecords(left.revision_actions ?? [], right.revision_actions ?? []),
+    revision_spans: primary.revision_spans?.length ? primary.revision_spans : left.revision_spans ?? right.revision_spans ?? [],
+  };
+}
+
+function catalogSignalPriority(signal: TableChangeSignal): number {
+  const source = signal.source_type || "LLM";
+  const grounding = signal.grounding_status || (signal.evidence_verified ? "VERIFIED" : "UNVERIFIED");
+  const sourceScore = ["RULE_BASED", "REVISION_TABLE", "EXCEL_DIFF"].includes(source) ? 100 : 0;
+  const groundingScore = grounding === "RULE_BASED" ? 40 : grounding === "VERIFIED" ? 30 : grounding === "PARTIAL" ? 15 : 0;
+  return sourceScore + groundingScore + (signal.confidence || 0);
+}
+
+function mergeCatalogCandidateSources(left: TableChangeSignal, right: TableChangeSignal): Partial<TableChangeSignal>[] {
+  const sources = [
+    ...(left.candidate_sources?.length ? left.candidate_sources : [left]),
+    ...(right.candidate_sources?.length ? right.candidate_sources : [right]),
+  ];
+  return mergeUniqueRecords(sources);
+}
+
+function mergeUniqueRecords<T extends Record<string, unknown>>(left: T[], right: T[] = []): T[] {
+  const out: T[] = [];
+  const seen = new Set<string>();
+  for (const item of [...left, ...right]) {
+    const key = JSON.stringify(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+function joinUniqueTexts(values: string[]): string {
+  const out: string[] = [];
+  for (const value of values) {
+    if (value && !out.includes(value)) out.push(value);
+  }
+  return out.join("；");
+}
 
 // ── 概念命中相关工具 ─────────────────────────────────────────
 
@@ -575,12 +688,26 @@ const originalEvidenceRows = computed<ReadableEvidenceRow[]>(() => {
     activeSignal.value,
     props.workflow?.document?.parsed_text || props.workflow?.document?.text_excerpt || "",
     activeEvidenceHighlightTerms.value,
-  );
+  ) || extractCleanEvidenceContext(activeSignal.value?.evidence_text ?? "");
   return context ? formatReadableEvidence(context, activeEvidenceHighlightTerms.value) : [];
 });
 
-const displayedEvidenceRows = computed<ReadableEvidenceRow[]>(() =>
-  originalEvidenceRows.value.length ? originalEvidenceRows.value : formattedEvidenceRows.value,
+const displayedEvidenceRows = computed<ReadableEvidenceRow[]>(() => {
+  const spans = activeSignal.value?.revision_spans ?? [];
+  if (spans.length) return revisionSpansToRows(spans);
+  return originalEvidenceRows.value.length ? originalEvidenceRows.value : formattedEvidenceRows.value;
+});
+
+interface EvidenceRevisionAction {
+  key: string;
+  action: string;
+  author: string;
+  date: string;
+  text: string;
+}
+
+const evidenceRevisionActions = computed<EvidenceRevisionAction[]>(() =>
+  extractEvidenceRevisionActions(activeSignal.value?.evidence_text ?? ""),
 );
 
 const semanticMatchTitle = computed(() =>
@@ -904,6 +1031,11 @@ function cleanBusinessLabel(raw = ""): string {
 
 function findOriginalContextText(signal: TableChangeSignal | null, sourceText: string, terms: string[]): string {
   if (!signal || !sourceText.trim()) return "";
+  // Strip machine-only JSON revision blocks so paragraph matching never lands on raw JSON
+  const strippedText = sourceText
+    .split(/\n(?=## )/)
+    .filter((section) => !section.startsWith("## 当前版本原位修订片段"))
+    .join("\n");
   const candidates = Array.from(
     new Set(
       [
@@ -913,16 +1045,69 @@ function findOriginalContextText(signal: TableChangeSignal | null, sourceText: s
         cleanBusinessLabel(signal.indicator_hint),
       ].filter((term) => term && term.length >= 2),
     ),
-  ).sort((a, b) => b.length - a.length);
+  )
+    .map((term) => ({ raw: term, normalized: normaliseEvidenceLookup(term) }))
+    .filter((term) => term.normalized.length >= 4)
+    .sort((a, b) => b.normalized.length - a.normalized.length);
 
+  const paragraphs = strippedText
+    .split(/\n\s*\n+/)
+    .map((paragraph) =>
+      paragraph
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("## "))
+        .join("\n")
+        .trim(),
+    )
+    .filter((paragraph) => paragraph && !paragraph.startsWith("- ["));
   for (const term of candidates) {
-    const index = sourceText.indexOf(term);
-    if (index < 0) continue;
-    const start = Math.max(0, index - 160);
-    const end = Math.min(sourceText.length, index + term.length + 360);
-    return trimContextBoundary(sourceText.slice(start, end));
+    const paragraph = paragraphs.find((item) =>
+      normaliseEvidenceLookup(item).includes(term.normalized),
+    );
+    if (paragraph) return trimContextBoundary(paragraph);
   }
   return "";
+}
+
+function normaliseEvidenceLookup(value = ""): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s·_./．、，,；;：:（）()[\]【】\-]+/g, "");
+}
+
+function extractCleanEvidenceContext(evidence = ""): string {
+  if (!evidence.trim()) return "";
+  const fragments = evidence
+    .split(/[；\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const hasRevision = fragments.some((fragment) => /^\[\s*(新增|删除|修改|调整)\s*\|/.test(fragment));
+  if (!hasRevision) return normalizeEvidenceText(evidence);
+  return normalizeEvidenceText(
+    fragments
+      .filter((fragment) => !/^\[\s*(新增|删除|修改|调整)\s*\|/.test(fragment))
+      .join("；"),
+  );
+}
+
+function extractEvidenceRevisionActions(evidence = ""): EvidenceRevisionAction[] {
+  const seen = new Set<string>();
+  const actions: EvidenceRevisionAction[] = [];
+  for (const fragment of evidence.split(/[；\n]+/)) {
+    const match = fragment.trim().match(
+      /^\[\s*(新增|删除|修改|调整)\s*\|\s*([^|\]]+?)\s*\|\s*([^\]]+?)\s*\]\s*(.*)$/,
+    );
+    if (!match) continue;
+    const [, action, author, date, rawText] = match;
+    const text = normalizeEvidenceText(rawText);
+    if (!text) continue;
+    const key = `${action}|${author.trim()}|${date.trim()}|${text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    actions.push({ key, action, author: author.trim(), date: date.trim(), text });
+  }
+  return actions;
 }
 
 function trimContextBoundary(value: string): string {
@@ -953,12 +1138,13 @@ const changeTypeColor = (t: TableChangeType): string =>
   ({ ADD: "green", MODIFY: "amber", DELETE: "red", SCOPE_ADJUST: "amber", INSTRUCTION_ADJUST: "blue", UNCLEAR: "outline" } as Record<string, string>)[t] ?? "outline";
 
 function effectiveChangeType(signal: TableChangeSignal): TableChangeType {
-  if (["INSTRUCTION_ADJUST", "UNCLEAR"].includes(signal.change_type)) {
-    const body = (signal.evidence_text || "").replace(/-?\s*\[\s*(?:新增|删除)\s*\|[^\]]+\]\s*/g, "").trim();
+  const evidence = signal.evidence_text || "";
+  if (/\[\s*(?:新增|删除)\s*\|/.test(evidence)) {
+    const body = evidence.replace(/-?\s*\[\s*(?:新增|删除)\s*\|[^\]]+\]\s*/g, "").trim();
     const businessText = `${signal.indicator_hint || ""} ${body}`;
-    if (/\[\s*新增\s*\|/.test(signal.evidence_text || "") && /新增\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)/.test(body)) return "ADD";
-    if (/\[\s*删除\s*\|/.test(signal.evidence_text || "") && /(?:删除|停报)\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)/.test(body)) return "DELETE";
-    if (/(定义|公式|计算|口径|范围|填报|统计)/.test(businessText)) return "SCOPE_ADJUST";
+    if (/\[\s*新增\s*\|/.test(evidence) && /新增\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)/.test(body)) return "ADD";
+    if (/\[\s*删除\s*\|/.test(evidence) && /(?:删除|停报)\s*(?:[A-Z]?\s*[列栏行]|字段|指标|项目|报表|附表)/.test(body)) return "DELETE";
+    if (/(定义|公式|计算|口径|范围|填报|统计|指项目|金融机构)/.test(businessText)) return "SCOPE_ADJUST";
   }
   return signal.change_type;
 }
@@ -1123,6 +1309,46 @@ const lineageRoleLabel = (r: string): string =>
 .active-concepts-empty-icon { color: var(--ink-400, #aaa); }
 .active-concepts-empty-hint { color: var(--ink-400, #aaa); }
 
+.evidence-revision-audit {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-alt);
+}
+.evidence-revision-audit h4 {
+  margin: 0 0 8px;
+  color: var(--ink-500);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.evidence-revision-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.evidence-revision-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink-700);
+  font-size: 11px;
+}
+.evidence-revision-item small { color: var(--ink-400); }
+.evidence-revision-operation {
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.evidence-revision-operation.add { color: #15803d; background: #dcfce7; }
+.evidence-revision-operation.del { color: #b91c1c; background: #fee2e2; }
+
 .evidence-row {
   display: flex;
   flex-direction: column;
@@ -1158,5 +1384,32 @@ const lineageRoleLabel = (r: string): string =>
   color: var(--orange-700, #9a3412);
   font-weight: 700;
   padding: 0 3px;
+}
+
+.evidence-meta-add {
+  background: rgba(22, 163, 74, 0.12);
+  color: #15803d;
+}
+
+.evidence-meta-del {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+}
+
+.evidence-ins {
+  text-decoration: underline;
+  font-style: normal;
+  background: rgba(22, 163, 74, 0.18);
+  color: #15803d;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.evidence-del {
+  text-decoration: line-through;
+  background: rgba(220, 38, 38, 0.08);
+  color: #b91c1c;
+  border-radius: 3px;
+  padding: 0 2px;
 }
 </style>

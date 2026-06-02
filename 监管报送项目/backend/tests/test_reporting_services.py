@@ -63,6 +63,56 @@ def test_unmatched_revision_signal_does_not_fallback_to_unrelated_g31_item():
     assert changes[0].change_type == "INDICATOR_REMOVE"
 
 
+def test_unverified_llm_signal_is_excluded_from_downstream_changes():
+    catalog = build_1104_seed_catalog()
+    signal = {
+        "table_code": "G31",
+        "indicator_hint": "绿色债券投资余额",
+        "change_type": "ADD",
+        "evidence_text": "本期新增绿色债券投资余额字段。",
+        "confidence": 0.3,
+        "source_type": "LLM",
+        "grounding_status": "UNVERIFIED",
+        "human_review_status": "PENDING",
+    }
+
+    changes = signals_to_changes([signal], catalog.reporting_items)
+
+    assert len(changes) == 1
+    assert changes[0].reporting_object_code == ""
+    assert changes[0].change_type == "MANUAL_REVIEW"
+
+
+def test_unresolved_instruction_signal_does_not_fallback_to_structural_catalog_item():
+    signal = {
+        "table_code": "G31",
+        "indicator_hint": "填报机构范围",
+        "change_type": "SCOPE_ADJUST",
+        "evidence_text": "3. 填报机构：新增直销银行。",
+        "confidence": 0.86,
+        "matched_item_code": "",
+        "match_status": "",
+    }
+    catalog_items = [
+        {
+            "item_code": "G31.PART_I.1_0.COL_1",
+            "item_name": "1.0-COL_1",
+            "row_label": "1.0",
+            "column_label": "COL_1",
+        },
+        {
+            "item_code": "G31.PART_I.1_0.C_修正久期",
+            "item_name": "1 行·C 列 · 修正久期",
+            "row_label": "1.债券投资合计",
+            "column_label": "C·修正久期",
+        },
+    ]
+
+    changes = signals_to_changes([signal], catalog_items)
+
+    assert changes[0].reporting_item_code == ""
+
+
 def test_composite_revision_signal_does_not_become_pseudo_exact_item_match():
     catalog = build_1104_seed_catalog()
     signal = {

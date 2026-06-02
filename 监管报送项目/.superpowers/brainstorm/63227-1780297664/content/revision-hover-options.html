@@ -1,0 +1,70 @@
+<style>
+  .revision-demo { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .revision-demo .intro { max-width: 900px; margin-bottom: 18px; }
+  .revision-demo .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .revision-demo .card { cursor: pointer; }
+  .revision-demo .card-image { min-height: 300px; padding: 18px; background: #fffdf9; }
+  .revision-demo .paper { padding: 18px; border: 1px solid #eadfd3; border-radius: 10px; background: white; }
+  .revision-demo .paper-title { margin-bottom: 14px; color: #77685f; font-size: 12px; }
+  .revision-demo .paragraph { color: #352f2b; font-size: 16px; line-height: 2; }
+  .revision-demo .add, .revision-demo .delete, .revision-demo .delete-summary { position: relative; border-radius: 3px; cursor: help; }
+  .revision-demo .add { padding: 1px 2px; border-bottom: 2px solid #4c87dc; color: #155ebf; background: #eaf3ff; }
+  .revision-demo .delete { padding: 1px 2px; color: #bd342b; background: #fff0ed; text-decoration: line-through; }
+  .revision-demo .delete-summary { display: inline-flex; margin-top: 14px; padding: 4px 8px; border: 1px dashed #df7368; color: #a43c35; background: #fff4f2; font-size: 12px; }
+  .revision-demo .tip { display: none; position: absolute; z-index: 2; left: 0; top: calc(100% + 7px); width: max-content; max-width: 260px; padding: 8px 10px; border: 1px solid #cfd7e6; border-radius: 6px; color: #4b5563; background: white; box-shadow: 0 7px 18px rgba(49, 63, 88, .16); font-size: 12px; line-height: 1.65; text-align: left; text-decoration: none; }
+  .revision-demo .add:hover .tip, .revision-demo .delete:hover .tip, .revision-demo .delete-summary:hover .tip { display: block; }
+  .revision-demo .tip b { color: #1f2937; }
+  .revision-demo .note { margin-top: 14px; color: #796f68; font-size: 12px; line-height: 1.6; }
+  .revision-demo .badge { display: inline-flex; margin-left: 6px; padding: 2px 7px; border-radius: 999px; color: #247c70; background: rgba(42, 157, 143, .12); font-size: 11px; }
+  @media (max-width: 900px) { .revision-demo .cards { grid-template-columns: 1fr; } }
+</style>
+
+<div class="revision-demo">
+  <div class="intro">
+    <h2>详情页修订展示：选择交互层级</h2>
+    <p class="subtitle">把鼠标放到蓝色新增词或红色删除标记上，可预览悬浮信息。A 可基于现有数据直接实现；B 需要后端补充 Word 原文中的位置锚点。</p>
+  </div>
+
+  <div class="cards">
+    <div class="card" data-choice="a" onclick="toggleSelect(this)">
+      <div class="card-image">
+        <div class="paper">
+          <div class="paper-title">A · 现有数据可落地 <span class="badge">推荐先做</span></div>
+          <div class="paragraph">
+            [11.1 通过<span class="add">互联网<span class="tip"><b>新增</b><br>陈施霖 · 2024-12-23<br>互联网</span></span>吸收的个人存款]
+            指<span class="add">金融机构<span class="tip"><b>新增</b><br>陈施霖 · 2024-12-23<br>金融机构</span></span>不通过银行网点、柜面、开卡机等实体渠道，
+            而是直接通过手机银行、网上银行、第三方互联网平台等互联网渠道为客户远程开立 II 类账户后吸收的存款。
+          </div>
+          <span class="delete-summary">另有 3 项删除修订
+            <span class="tip"><b>删除</b> · 陈施霖 · 2024-12-23<br><s>银行</s><br><s>开卡</s><br><s>远程</s></span>
+          </span>
+        </div>
+        <p class="note">新增词直接嵌入正文。删除词因缺少原始位置锚点，集中到一枚紧凑标记，悬浮后展开。</p>
+      </div>
+      <div class="card-body">
+        <h3>A · 行内新增 + 删除汇总悬浮</h3>
+        <p>改动范围小，数据含义准确，详情页阅读压力低。</p>
+      </div>
+    </div>
+
+    <div class="card" data-choice="b" onclick="toggleSelect(this)">
+      <div class="card-image">
+        <div class="paper">
+          <div class="paper-title">B · Word 级还原</div>
+          <div class="paragraph">
+            [11.1 通过<span class="add">互联网<span class="tip"><b>新增</b><br>陈施霖 · 2024-12-23<br>互联网</span></span>吸收的个人存款]
+            指<span class="add">金融机构<span class="tip"><b>新增</b><br>陈施霖 · 2024-12-23<br>金融机构</span></span>不通过
+            <span class="delete">银行<span class="tip"><b>删除</b><br>陈施霖 · 2024-12-23<br>银行</span></span>网点、柜面、
+            <span class="delete">开卡<span class="tip"><b>删除</b><br>陈施霖 · 2024-12-23<br>开卡</span></span>机等实体渠道，而是直接通过手机银行、网上银行、第三方互联网平台等互联网渠道为客户
+            <span class="delete">远程<span class="tip"><b>删除</b><br>陈施霖 · 2024-12-23<br>远程</span></span>开立 II 类账户后吸收的存款。
+          </div>
+        </div>
+        <p class="note">每个删除词也在原位置显示。需要解析 Word XML 时保存段落位置和修订 run 顺序，不能仅靠当前动作列表推断。</p>
+      </div>
+      <div class="card-body">
+        <h3>B · Word 原位悬浮</h3>
+        <p>最接近你截图中的 Word 体验，但需要后端数据结构升级。</p>
+      </div>
+    </div>
+  </div>
+</div>

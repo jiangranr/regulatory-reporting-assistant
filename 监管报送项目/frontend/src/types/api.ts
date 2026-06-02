@@ -52,6 +52,7 @@ export interface RegTask {
 
 export interface ImpactItem {
   reporting_item_code: string;
+  reporting_item_name?: string;
   impact_type: string;
   impacted_reporting_field: string;
   impacted_source_fields: string[];
@@ -60,6 +61,8 @@ export interface ImpactItem {
   recommended_action: string;
   confidence_level: string;
   risk_level: RiskLevel;
+  /** ROW = 行指标新增/删除；COLUMN = 列度量变更；CELL = 单 cell 口径；UNCLEAR = 未知 */
+  change_axis?: string;
 }
 
 export interface TicketDraft {
@@ -161,11 +164,19 @@ export interface ImpactReviewStats {
   business_removed_fields: number;
 }
 
+export interface ImpactReviewSystemOption {
+  system_code: string;
+  system_name: string;
+  system_type: string;
+  owner_team: string;
+}
+
 export interface ImpactReviewResponse {
   status: ImpactReviewStatus;
   review: ImpactReviewContent;
   ai_baseline: ImpactReviewContent;
   stats: ImpactReviewStats;
+  system_options: ImpactReviewSystemOption[];
 }
 
 export interface ExecutionTask {
@@ -307,17 +318,70 @@ export type TableChangeType =
   | "INSTRUCTION_ADJUST"
   | "UNCLEAR";
 
+export interface RevisionSpan {
+  type: "TEXT" | "INSERT" | "DELETE";
+  text: string;
+  author?: string;
+  date?: string;
+  action?: string;
+}
+
 export interface TableChangeSignal {
+  business_signal_id?: string;
+  item_codes?: string[];
   table_code: string;
   section_hint: string;
   indicator_hint: string;
   change_type: TableChangeType;
   evidence_text: string;
+  change_summary?: string;
+  business_summary?: string;
+  changed_dimension?: string;
+  changed_from?: string;
+  changed_to?: string;
+  summary_confidence?: number;
+  revision_actions?: Record<string, unknown>[];
+  revision_spans?: RevisionSpan[];
+  candidate_sources?: Partial<TableChangeSignal>[];
   confidence: number;
   evidence_verified: boolean;
+  source_type?: "LLM" | "REVISION_TABLE" | "EXCEL_DIFF" | "RULE_BASED";
+  grounding_status?: "VERIFIED" | "PARTIAL" | "UNVERIFIED" | "RULE_BASED";
+  grounding_coverage?: number;
+  matched_excerpt?: string;
+  human_review_status?: "PENDING" | "ACCEPTED" | "REJECTED" | "CORRECTED";
   matched_item_code?: string;
   match_status?: string;
   composite_match?: CompositeSemanticMatch;
+  llm_summary?: string | {
+    change_summary?: string;
+    business_summary?: string;
+    display_title?: string;
+    business_meaning?: string;
+  };
+}
+
+export interface HallucinationMetrics {
+  total_signals: number;
+  ai_signals: number;
+  rule_based_signals: number;
+  verified_signals: number;
+  partial_signals: number;
+  unverified_signals: number;
+  isolated_signals: number;
+  grounding_rate: number;
+  suspected_hallucination_rate: number;
+  isolation_rate: number;
+  pending_review_signals: number;
+  accepted_signals: number;
+  rejected_signals: number;
+  corrected_signals: number;
+  human_acceptance_rate: number;
+}
+
+export interface SignalReviewResponse {
+  signal: TableChangeSignal;
+  metrics: HallucinationMetrics;
 }
 
 export interface CompositeSemanticMatch {

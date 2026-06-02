@@ -5,10 +5,11 @@ Touches the shared test_app.db via FastAPI startup (init_db) and the
 bootstrap_route_a helpers. Idempotent — safe to re-run.
 """
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, SQLModel, create_engine
 
 from app.core.database import engine
 from app.main import app
+from app.models.db_models import RegReportingItem
 from app.services.reporting_catalog_loader import load_catalog_from_db
 from scripts.bootstrap_route_a import _ensure_g31_detail_items
 from scripts import seed_g31_lineage_reference as g31_seed
@@ -66,3 +67,38 @@ def test_loader_returns_empty_catalog_safely():
         catalog = load_catalog_from_db(session)
     assert isinstance(catalog.reporting_items, list)
     assert isinstance(catalog.lineage, list)
+
+
+def test_loader_excludes_structural_items_from_impact_analysis_catalog():
+    """历史导入残留的 COL_1 等结构列不能参与 impact 的指标匹配。"""
+    memory_engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(memory_engine)
+
+    with Session(memory_engine) as session:
+        session.add_all([
+            RegReportingItem(
+                reporting_object_id=1,
+                item_code="G31.PART_I.1_0.COL_1",
+                item_name="1.0-COL_1",
+                row_label="1.0",
+                column_label="COL_1",
+                is_fillable=False,
+                is_derived=False,
+            ),
+            RegReportingItem(
+                reporting_object_id=1,
+                item_code="G31.PART_I.1_0.C_修正久期",
+                item_name="1 行·C 列 · 修正久期",
+                row_label="1.债券投资合计",
+                column_label="C·修正久期",
+                is_fillable=True,
+                is_derived=False,
+            ),
+        ])
+        session.commit()
+
+        catalog = load_catalog_from_db(session)
+
+    assert [item["item_code"] for item in catalog.reporting_items] == [
+        "G31.PART_I.1_0.C_修正久期"
+    ]

@@ -103,7 +103,12 @@
             <td class="mono" style="color:var(--ink-400);">{{ padIdx(i) }}</td>
             <td>
               <div style="font-weight:500;color:var(--ink-900);">{{ item.aggregate_title || item.impacted_reporting_field || item.reporting_item_code }}</div>
-              <div v-if="item.aggregate_rows?.length" class="impact-rows">
+              <!-- ROW axis：展示受影响的列度量 -->
+              <div v-if="item.aggregate_axis === 'ROW' && item.aggregate_columns?.length" class="impact-rows">
+                涉及列：{{ item.aggregate_columns.join("、") }}
+              </div>
+              <!-- COLUMN / UNCLEAR axis：展示受影响的行指标 -->
+              <div v-else-if="item.aggregate_rows?.length" class="impact-rows">
                 影响行：{{ item.aggregate_rows.join("、") }}
               </div>
               <div v-if="item.aggregate_item_codes?.length" class="mono impact-code-line">
@@ -250,7 +255,9 @@ import type {
 interface DisplayImpactItem extends Record<string, any> {
   aggregate_key?: string;
   aggregate_title?: string;
-  aggregate_rows?: string[];
+  aggregate_axis?: string;        // ROW | COLUMN | CELL | UNCLEAR
+  aggregate_rows?: string[];      // COLUMN axis：受影响的行指标名列表
+  aggregate_columns?: string[];   // ROW axis：受影响的列度量名列表
   aggregate_item_codes?: string[];
 }
 
@@ -397,6 +404,62 @@ function roleMeta(role: string): { label: string; cls: string } {
   return map[role] ?? { label: "", cls: "" };
 }
 
+/**
+ * 从 item_code 取第 2 段（index 2）作为行标签，第 3 段以后作为列标签。
+ * 适配 G01_IV 风格（11_1通过互联网...）和 G31 风格（1_0）两种编码。
+ */
+function rawRowSegment(code: string): string {
+  const parts = String(code ?? "").split(".");
+  return parts.length >= 3 ? parts[2] : "";
+}
+function rawColSegment(code: string): string {
+  const parts = String(code ?? "").split(".");
+  return parts.length >= 4 ? parts.slice(3).join(".") : "";
+}
+/** 将行段 11_1通过互联网... 格式化为可读标签 11.1通过互联网... */
+function formatRowLabel(segment: string): string {
+  if (!segment) return "";
+  // 数字_字母/数字前缀（如 11_1、11_a_1）用点替换首个下划线
+  return segment.replace(/^(\d+)_/, "$1.").replace(/_/g, ".");
+}
+
+/**
+ * 当 change_axis 为 UNCLEAR（旧数据 / LLM 未判断）时，从 item_code 结构推断：
+ * - 同列不同行 → ROW（新增/删除了产品类别行，如 G01_IV 新增活期/定期行）
+ * - 同行不同列 → COLUMN（修改了某度量列，如 G31 修改修正久期列）
+ * 两个都有或都没有 → UNCLEAR，保持原逻辑
+ */
+function inferAxisFromCodes(allItems: any[]): Map<any, string> {
+  const axisMap = new Map<any, string>();
+  for (const item of allItems) {
+    if (item.change_axis && item.change_axis !== "UNCLEAR") {
+      axisMap.set(item, item.change_axis);
+      continue;
+    }
+    const myRow = rawRowSegment(item.reporting_item_code);
+    const myCol = rawColSegment(item.reporting_item_code);
+    if (!myRow || !myCol) { axisMap.set(item, "UNCLEAR"); continue; }
+
+    const sameColDiffRow = allItems.some(
+      (other) =>
+        other !== item &&
+        rawColSegment(other.reporting_item_code) === myCol &&
+        rawRowSegment(other.reporting_item_code) !== myRow,
+    );
+    const sameRowDiffCol = allItems.some(
+      (other) =>
+        other !== item &&
+        rawRowSegment(other.reporting_item_code) === myRow &&
+        rawColSegment(other.reporting_item_code) !== myCol,
+    );
+
+    if (sameColDiffRow && !sameRowDiffCol) axisMap.set(item, "ROW");
+    else if (sameRowDiffCol && !sameColDiffRow) axisMap.set(item, "COLUMN");
+    else axisMap.set(item, "UNCLEAR");
+  }
+  return axisMap;
+}
+
 function aggregateImpactsForDisplay(items: any[], wf: TaskWorkflow | null): DisplayImpactItem[] {
   const signalByItemCode = new Map<string, { row: string; column: string }>();
   for (const signal of wf?.document_profile?.change_signals ?? []) {
@@ -405,14 +468,28 @@ function aggregateImpactsForDisplay(items: any[], wf: TaskWorkflow | null): Disp
     if (parsed.column || parsed.row) signalByItemCode.set(signal.matched_item_code, parsed);
   }
 
+  const axisMap = inferAxisFromCodes(items);
+
   const groups = new Map<string, DisplayImpactItem[]>();
   for (const item of items) {
+    const axis: string = axisMap.get(item) ?? "UNCLEAR";
     const signal = signalByItemCode.get(item.reporting_item_code);
-    const column = normalizeColumnLabel(
-      signal?.column || parseColumnFromCode(item.reporting_item_code) || item.impacted_reporting_field || item.reporting_item_code,
-    );
     const lineageState = hasMappedLineage(item) ? "mapped" : "unmapped";
-    const groupKey = [item.impact_type, item.risk_level, item.confidence_level, lineageState, column].join("|");
+
+    let groupDimension: string;
+    if (axis === "ROW") {
+      // 以行指标为父级：相同指标的不同列合并成 1 行
+      groupDimension = normalizeRowLabel(
+        item.reporting_item_name || signal?.row || formatRowLabel(rawRowSegment(item.reporting_item_code)) || item.reporting_item_code,
+      );
+    } else {
+      // COLUMN / CELL / UNCLEAR：以列度量为父级（原行为）
+      groupDimension = normalizeColumnLabel(
+        signal?.column || parseColumnFromCode(item.reporting_item_code) || item.impacted_reporting_field || item.reporting_item_code,
+      );
+    }
+
+    const groupKey = [item.impact_type, item.risk_level, item.confidence_level, lineageState, axis, groupDimension].join("|");
     if (!groups.has(groupKey)) groups.set(groupKey, []);
     groups.get(groupKey)!.push(item);
   }
@@ -420,23 +497,56 @@ function aggregateImpactsForDisplay(items: any[], wf: TaskWorkflow | null): Disp
   const result: DisplayImpactItem[] = [];
   for (const [key, group] of groups) {
     const first = group[0];
-    const rows = uniqueNonEmpty(
-      group.map((item) => signalByItemCode.get(item.reporting_item_code)?.row || parseRowFromCode(item.reporting_item_code)),
-    );
+    const axis: string = first.change_axis || "UNCLEAR";
     const codes = uniqueNonEmpty(group.map((item) => item.reporting_item_code));
     const sourceFields = uniqueNonEmpty(group.flatMap((item) => item.impacted_source_fields ?? []));
     const roles = uniqueNonEmpty(group.flatMap((item) => item.impacted_lineage_roles ?? []));
-    const column = normalizeColumnLabel(
-      signalByItemCode.get(first.reporting_item_code)?.column
-        || parseColumnFromCode(first.reporting_item_code)
-        || first.impacted_reporting_field
-        || first.reporting_item_code,
-    );
+
+    let aggregateTitle: string;
+    let aggregateRows: string[] = [];
+    let aggregateColumns: string[] = [];
+
+    if (axis === "ROW") {
+      // 父级 = 行指标名；子级 = 受影响的列
+      const firstSig = signalByItemCode.get(first.reporting_item_code);
+      aggregateTitle = normalizeRowLabel(
+        first.reporting_item_name
+          || firstSig?.row
+          || formatRowLabel(rawRowSegment(first.reporting_item_code))
+          || first.reporting_item_code,
+      );
+      aggregateColumns = uniqueNonEmpty(
+        group.map((item) => {
+          const sig = signalByItemCode.get(item.reporting_item_code);
+          return normalizeColumnLabel(sig?.column || parseColumnFromCode(item.reporting_item_code) || item.impacted_reporting_field || "");
+        }),
+      );
+    } else {
+      // 父级 = 列度量名；子级 = 受影响的行
+      const firstSig = signalByItemCode.get(first.reporting_item_code);
+      aggregateTitle = normalizeColumnLabel(
+        firstSig?.column || parseColumnFromCode(first.reporting_item_code) || first.impacted_reporting_field || first.reporting_item_code,
+      );
+      aggregateRows = uniqueNonEmpty(
+        group.map((item) => {
+          const sig = signalByItemCode.get(item.reporting_item_code);
+          return normalizeRowLabel(
+            sig?.row
+              || item.reporting_item_name
+              || formatRowLabel(rawRowSegment(item.reporting_item_code))
+              || "",
+          );
+        }),
+      );
+    }
+
     result.push({
       ...first,
       aggregate_key: key,
-      aggregate_title: column,
-      aggregate_rows: rows,
+      aggregate_title: aggregateTitle,
+      aggregate_axis: axis,
+      aggregate_rows: aggregateRows,
+      aggregate_columns: aggregateColumns,
       aggregate_item_codes: codes,
       impacted_source_fields: sourceFields,
       impacted_lineage_roles: roles,

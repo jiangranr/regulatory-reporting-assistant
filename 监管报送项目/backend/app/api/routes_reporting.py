@@ -116,14 +116,16 @@ def seed_1104_catalog(session: Session = Depends(get_session)) -> ReportingSeedR
 
 @router.post("/bootstrap-all")
 def bootstrap_all(session: Session = Depends(get_session)) -> dict:
-    """一键全量引导：基础目录 + G31 详细 item + G31 详细血缘 + 概念库。
+    """一键全量引导：基础目录 + G31/G01_IV 参考血缘 + 概念库。
 
     幂等，可重复运行。执行顺序：
     1. 灌 1104 基础目录（含 G24/G21/G25/G27/G31 基础血缘）
     2. 补齐 G31 A-E 列 item（Excel 解析产出的详细指标）
     3. 灌 G31 详细血缘（7 系统 / 26 字段 / 36 条血缘，mapping_status=SEED_CONFIRMED）
-    4. 灌概念库 + 规则卡片
+    4. 对已导入的 G01_IV 互联网个人存款重点指标灌参考血缘
+    5. 灌概念库 + 规则卡片
     """
+    from scripts import seed_g01_iv_lineage_reference as g01_seed
     from scripts import seed_g31_lineage_reference as g31_seed
 
     # Step 1: 基础目录（含血缘写入 ReportingItemLineage）
@@ -171,7 +173,13 @@ def bootstrap_all(session: Session = Depends(get_session)) -> dict:
             session.add(existing)
     session.flush()
 
-    # Step 4: 概念库
+    # Step 4: G01_IV 重点指标参考血缘。G01_IV 表样未导入时安全跳过。
+    g01_system_by_code = g01_seed.upsert_systems(session)
+    g01_field_by_code = g01_seed.upsert_fields(session, g01_system_by_code)
+    g01_inserted, g01_existing, g01_missing = g01_seed.upsert_lineage(session, g01_field_by_code)
+    session.flush()
+
+    # Step 5: 概念库
     concept_stats = seed_concepts_and_rule_cards(session)
 
     session.commit()
@@ -183,6 +191,12 @@ def bootstrap_all(session: Session = Depends(get_session)) -> dict:
         "g31_systems": len(g31_seed.DATA_SYSTEMS),
         "g31_fields": len(g31_seed.DATA_FIELDS),
         "g31_lineage": len(g31_seed.LINEAGE),
+        "g01_iv_systems": len(g01_seed.DATA_SYSTEMS),
+        "g01_iv_fields": len(g01_seed.DATA_FIELDS),
+        "g01_iv_lineage": len(g01_seed.LINEAGE),
+        "g01_iv_lineage_inserted": g01_inserted,
+        "g01_iv_lineage_existing": g01_existing,
+        "g01_iv_lineage_missing": g01_missing,
         "concepts_added": concept_stats["concepts_added"],
         "rule_cards_added": concept_stats["rule_cards_added"],
     }

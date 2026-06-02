@@ -90,4 +90,69 @@ describe("ImpactScopeReview", () => {
     );
     expect(wrapper.emitted("confirmed")).toHaveLength(1);
   });
+
+  it("commits a pending field draft before confirming the review", async () => {
+    const fetchMock = mockFetch({ parent: {}, children: [] });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => IMPACT_REVIEW_RESPONSE,
+      text: async () => "",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const wrapper = mount(ImpactScopeReview, { props: { taskId: 101 } });
+    await flushPromises();
+
+    await wrapper.get("[data-test='field-code-INTERBANK_CORE']").setValue("interbank_deal.pending_override");
+    await wrapper.get("[data-test='field-name-INTERBANK_CORE']").setValue("待自动提交字段");
+    await wrapper.get("[data-test='confirm-impact-review']").trigger("click");
+    await flushPromises();
+
+    const confirmCall = fetchMock.mock.calls.find((call) => String(call[0]).endsWith("/impact-review/confirm"));
+    expect(String(confirmCall?.[1]?.body)).toContain("interbank_deal.pending_override");
+    expect(String(confirmCall?.[1]?.body)).toContain("待自动提交字段");
+  });
+
+  it("adds a new system field from a catalog option", async () => {
+    const fetchMock = mockFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const wrapper = mount(ImpactScopeReview, { props: { taskId: 101 } });
+    await flushPromises();
+
+    await wrapper.get("[data-test='new-system-option-G24.MAIN.INTERBANK_BORROWING_BAL_TOP100']").setValue("VALUATION");
+    await wrapper.get("[data-test='new-system-field-code-G24.MAIN.INTERBANK_BORROWING_BAL_TOP100']").setValue("valuation_bond_metric.modified_duration");
+    await wrapper.get("[data-test='new-system-field-name-G24.MAIN.INTERBANK_BORROWING_BAL_TOP100']").setValue("债券修正久期");
+    await wrapper.get("[data-test='add-system-field-G24.MAIN.INTERBANK_BORROWING_BAL_TOP100']").trigger("click");
+    await wrapper.get("[data-test='save-impact-review']").trigger("click");
+    await flushPromises();
+
+    const saveCall = fetchMock.mock.calls.find((call) => call[1]?.method === "PUT");
+    expect(String(saveCall?.[1]?.body)).toContain('"responsible_system":"VALUATION"');
+    expect(String(saveCall?.[1]?.body)).toContain('"responsible_system_zh":"估值计量系统"');
+    expect(String(saveCall?.[1]?.body)).toContain("valuation_bond_metric.modified_duration");
+  });
+
+  it("commits a manually entered new system and field before confirming", async () => {
+    const fetchMock = mockFetch({ parent: {}, children: [] });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => IMPACT_REVIEW_RESPONSE,
+      text: async () => "",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const wrapper = mount(ImpactScopeReview, { props: { taskId: 101 } });
+    await flushPromises();
+
+    await wrapper.get("[data-test='new-system-code-G24.MAIN.INTERBANK_BORROWING_BAL_TOP100']").setValue("MANUAL_CORE");
+    await wrapper.get("[data-test='new-system-name-G24.MAIN.INTERBANK_BORROWING_BAL_TOP100']").setValue("手工补录系统");
+    await wrapper.get("[data-test='new-system-type-G24.MAIN.INTERBANK_BORROWING_BAL_TOP100']").setValue("SOURCE");
+    await wrapper.get("[data-test='new-system-field-code-G24.MAIN.INTERBANK_BORROWING_BAL_TOP100']").setValue("manual_core.extra_field");
+    await wrapper.get("[data-test='new-system-field-name-G24.MAIN.INTERBANK_BORROWING_BAL_TOP100']").setValue("手工补录字段");
+    await wrapper.get("[data-test='confirm-impact-review']").trigger("click");
+    await flushPromises();
+
+    const confirmCall = fetchMock.mock.calls.find((call) => String(call[0]).endsWith("/impact-review/confirm"));
+    expect(String(confirmCall?.[1]?.body)).toContain('"responsible_system":"MANUAL_CORE"');
+    expect(String(confirmCall?.[1]?.body)).toContain('"responsible_system_zh":"手工补录系统"');
+    expect(String(confirmCall?.[1]?.body)).toContain("manual_core.extra_field");
+  });
 });

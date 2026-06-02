@@ -218,7 +218,7 @@ def test_upload_reporting_triplet_v2_profile_uses_business_field_name_for_indica
     assert preferred_stock_signal["composite_match"]["filter_conditions"] == [
         {
             "field_code": "ods_invest_position.asset_type",
-            "field_name": "投资资产类型",
+            "field_name": "投资资产类型（债券/权益/公募基金/私募/ABS等）",
             "operator": "=",
             "value_code": "PREFERRED_STOCK",
             "value_name": "优先股",

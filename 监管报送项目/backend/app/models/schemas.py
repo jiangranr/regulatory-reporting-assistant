@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -80,6 +81,7 @@ class RegTaskRead(BaseModel):
 
 class ReportingImpactItemRead(BaseModel):
     reporting_item_code: str
+    reporting_item_name: str = ""
     impact_type: str
     impacted_reporting_field: str
     impacted_source_fields: list[str]
@@ -95,6 +97,7 @@ class ReportingImpactItemRead(BaseModel):
     sub_ticket_triggers: dict[str, str] = {}
     confidence_level: str = "MEDIUM"
     risk_level: RiskLevel
+    change_axis: str = "UNCLEAR"  # ROW / COLUMN / CELL / UNCLEAR
 
 
 class ImpactAnalysisResponse(BaseModel):
@@ -158,6 +161,7 @@ class ImpactReviewResponse(BaseModel):
     review: dict
     ai_baseline: dict
     stats: dict
+    system_options: list[dict[str, str]] = []
 
 
 class ImpactReviewSaveResponse(BaseModel):
@@ -247,16 +251,34 @@ class ReportingChangeCandidateRead(BaseModel):
 
 
 class TableChangeSignalRead(BaseModel):
+    business_signal_id: str = ""
+    item_codes: list[str] = []
     table_code: str
     section_hint: str = ""
     indicator_hint: str = ""
     change_type: str
     evidence_text: str = ""
+    change_summary: str = ""
+    business_summary: str = ""
+    changed_dimension: str = ""
+    changed_from: str = ""
+    changed_to: str = ""
+    summary_confidence: float = 0.0
+    revision_actions: list[dict] = []
+    revision_spans: list[dict] = []
+    candidate_sources: list[dict] = []
     confidence: float = 0.7
     evidence_verified: bool = True
+    source_type: str = "LLM"
+    grounding_status: str = ""
+    grounding_coverage: float = 0.0
+    matched_excerpt: str = ""
+    human_review_status: str = "PENDING"
     matched_item_code: str = ""
     match_status: str = ""
     composite_match: dict = {}
+    llm_summary: dict = {}
+    change_axis: str = "UNCLEAR"  # ROW / COLUMN / CELL / UNCLEAR
 
 
 class DocumentTaskProfileRead(BaseModel):
@@ -278,6 +300,35 @@ class DocumentTaskProfileRead(BaseModel):
     review_status: str = "PENDING"
     raw_response: str = ""
     created_at: datetime | None = None
+
+
+class HallucinationMetricsRead(BaseModel):
+    total_signals: int = 0
+    ai_signals: int = 0
+    rule_based_signals: int = 0
+    verified_signals: int = 0
+    partial_signals: int = 0
+    unverified_signals: int = 0
+    isolated_signals: int = 0
+    grounding_rate: float = 0.0
+    suspected_hallucination_rate: float = 0.0
+    isolation_rate: float = 0.0
+    pending_review_signals: int = 0
+    accepted_signals: int = 0
+    rejected_signals: int = 0
+    corrected_signals: int = 0
+    human_acceptance_rate: float = 0.0
+
+
+class SignalReviewRequest(BaseModel):
+    action: Literal["ACCEPTED", "REJECTED", "CORRECTED"]
+    reviewer: str
+    comment: str = ""
+
+
+class SignalReviewResponse(BaseModel):
+    signal: TableChangeSignalRead
+    metrics: HallucinationMetricsRead
 
 
 class RevisionEntryRead(BaseModel):

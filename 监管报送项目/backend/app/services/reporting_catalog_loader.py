@@ -25,6 +25,7 @@ from app.models.db_models import (
     RegReportingItem,
     ReportingItemLineage,
 )
+from app.services.reporting_item_scope import filter_analysis_items
 from app.services.reporting_seed import ReportingSeedCatalog
 
 
@@ -37,9 +38,9 @@ def load_catalog_from_db(session: Session) -> ReportingSeedCatalog:
     Returns an empty-but-valid catalog when the tables are unpopulated; callers
     will end up with no impacts, which surfaces a missing bootstrap clearly.
     """
-    items = session.exec(
+    items = filter_analysis_items(session.exec(
         select(RegReportingItem).where(RegReportingItem.status == "ACTIVE")
-    ).all()
+    ).all())
     reporting_items = [
         {
             "item_code": item.item_code,

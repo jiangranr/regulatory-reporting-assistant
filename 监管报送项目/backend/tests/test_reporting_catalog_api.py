@@ -24,3 +24,15 @@ def test_seed_and_query_1104_funds_interbank_reporting_catalog():
     field_codes = {item["field_code"] for item in lineage_response.json()["fields"]}
     assert "interbank_deal.balance" in field_codes
     assert "interbank_deal.counterparty_fin_org_code" in field_codes
+
+
+def test_bootstrap_all_reports_g01_iv_reference_lineage_stats():
+    client = TestClient(app)
+
+    response = client.post("/api/reporting/bootstrap-all")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["g01_iv_systems"] == 4
+    assert payload["g01_iv_fields"] == 11
+    assert payload["g01_iv_lineage"] == 30

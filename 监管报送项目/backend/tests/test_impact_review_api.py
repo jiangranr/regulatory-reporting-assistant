@@ -50,6 +50,12 @@ def test_impact_review_save_confirm_generates_system_tickets():
     payload = review_response.json()
     assert payload["status"] == "EDITING"
     assert payload["stats"]["total_items"] >= 1
+    assert {
+        "system_code": "INTERBANK_CORE",
+        "system_name": "同业业务系统",
+        "system_type": "SOURCE",
+        "owner_team": "金融市场科技团队",
+    } in payload["system_options"]
 
     review = payload["review"]
     item = review["items"][0]

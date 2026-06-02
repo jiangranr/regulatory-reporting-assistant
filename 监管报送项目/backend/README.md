@@ -50,7 +50,8 @@ uv run python -m scripts.migrate_sqlite_to_mysql
 
 ### 初始化样板数据（路线 A · seed 模式）
 
-新环境第一次启动后，跑一次 bootstrap 把 1104 目录 + G31 字段血缘灌进库：
+新环境第一次启动后，跑一次 bootstrap 把 1104 目录、G31 字段血缘和已导入
+`G01_IV` 表样的互联网个人存款重点指标参考血缘灌进库：
 
 ```bash
 uv run python -m scripts.bootstrap_route_a
@@ -62,9 +63,10 @@ uv run python -m scripts.bootstrap_route_a
 2. 灌 1104 基础目录（5 张报表对象 + 章节 + 1 个 G31 粗粒度 item）
 3. 兜底插入 5 个 G31 详细 item（`G31.PART_I.1_0.A` ~ `E`）—— 这些 item 原本由 Excel 解析产生，bootstrap 里硬编码补齐
 4. 灌 G31 字段目录（7 系统 / 25 字段）+ 36 条血缘
-5. 终端打印 D 列实际命中的 7 条血缘作为校验
+5. 对已导入的 `G01_IV` 表样，灌互联网个人存款 4 个重点指标的 30 条参考血缘
+6. 终端打印 G31 D 列实际命中的 7 条血缘作为校验
 
-> 这是"路线 A"——血缘暂时用 mock 数据演示。生产化时应改为对接元数据平台（SQL 解析、ETL 配置同步、人工录入）。
+> 这是"路线 A"——G31 和 G01_IV 血缘暂时用 mock 数据演示。生产化时应改为对接元数据平台（SQL 解析、ETL 配置同步、人工录入）。
 
 ### 数据库表清单（共 22 张）
 

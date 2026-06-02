@@ -404,3 +404,60 @@ function findNextKeywordIndex(text: string, keywords: string[], start: number): 
   }
   return next;
 }
+
+interface RevisionSpanLike {
+  type?: string;
+  text: string;
+  author?: string;
+  date?: string;
+  action?: string;
+}
+
+export function revisionSpansToRows(spans: RevisionSpanLike[]): ReadableEvidenceRow[] {
+  const nonEmpty = spans.filter((span) => span.text);
+  if (!nonEmpty.length) return [];
+
+  const insertDeleteSpans = nonEmpty.filter(
+    (span) => (span.type || "").toUpperCase() === "INSERT" || (span.type || "").toUpperCase() === "DELETE",
+  );
+
+  const segments: EvidenceSegment[] = nonEmpty.map((span) => {
+    const type = (span.type || "TEXT").toUpperCase();
+    const author = span.author || "";
+    const date = (span.date || "").slice(0, 10);
+    if (type === "INSERT") {
+      return {
+        text: span.text,
+        highlighted: false,
+        operation: "ADD" as const,
+        author,
+        date,
+        title: [span.action || "新增", author || "未知作者", date || "日期未知", span.text].filter(Boolean).join(" · "),
+      };
+    }
+    if (type === "DELETE") {
+      return {
+        text: span.text,
+        highlighted: false,
+        operation: "DELETE" as const,
+        author,
+        date,
+        title: [span.action || "删除", author || "未知作者", date || "日期未知", span.text].filter(Boolean).join(" · "),
+      };
+    }
+    return { text: span.text, highlighted: false };
+  });
+
+  const dates = [...new Set(insertDeleteSpans.map((s) => (s.date || "").slice(0, 10)).filter(Boolean))].sort();
+  const dateRange = dates.length > 1 ? `${dates[0]} ~ ${dates[dates.length - 1]}` : (dates[0] ?? "");
+
+  return [{
+    key: "revision-spans",
+    action: "",
+    author: "",
+    date: dateRange,
+    text: nonEmpty.map((s) => s.text).join(""),
+    segments: segments.filter((s) => s.text),
+    hasRevisionMarks: insertDeleteSpans.length > 0,
+  }];
+}

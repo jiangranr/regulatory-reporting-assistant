@@ -5,11 +5,13 @@
 """
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from app.core.database import engine
@@ -53,6 +55,12 @@ def create_batch(session: Session, zip_filename: str, source_doc_ref: str) -> Re
 # ──────────────────────────────────────────────────────────────────────────────
 # 私有辅助函数
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _section_code_for_object_code(object_code: str) -> str:
+    """根据报表代码后缀推断章节；无后缀的常规报表默认使用 PART_I。"""
+    match = re.search(r"_(I|II|III|IV|V|VI|VII|VIII|IX|X)$", object_code.upper())
+    return f"PART_{match.group(1)}" if match else "PART_I"
+
 
 def _get_or_create_system(session: Session) -> RegReportingSystem:
     """获取或创建 system_code='1104' 的记录。"""
@@ -139,13 +147,12 @@ def _write_excel_results(
     object_code: str,
     version_label: str,
     change_type: str = "NEW",
+    section_code: str = "PART_I",
 ) -> int:
     """
     写 template、template_cells、dimensions、dimension_members、items、item_dimensions。
     返回写入的 item 数量。
     """
-    section_code = "PART_I"
-
     # 1. 查或建 RegReportingSection（用 reporting_object_id 过滤，不传 object_code）
     section = session.exec(
         select(RegReportingSection).where(
@@ -157,7 +164,7 @@ def _write_excel_results(
         section = RegReportingSection(
             reporting_object_id=object_id,
             section_code=section_code,
-            section_name="第一部分",
+            section_name=section_code.replace("PART_", "第 ") + " 部分",
         )
         session.add(section)
         session.flush()
@@ -179,9 +186,18 @@ def _write_excel_results(
         )
         session.add(template)
         session.flush()
+    else:
+        template.batch_item_id = batch_item_id
+        session.add(template)
+        session.flush()
 
     # 3. 批量写 RegReportingTemplateCell（先删旧的，再写新的）
     if parse_result.template_cells:
+        session.exec(
+            delete(RegReportingTemplateCell).where(
+                RegReportingTemplateCell.template_id == template.id
+            )
+        )
         cells = [
             RegReportingTemplateCell(
                 template_id=template.id,
@@ -197,7 +213,7 @@ def _write_excel_results(
             for c in parse_result.template_cells
         ]
         session.add_all(cells)
-        session.commit()
+        session.flush()
 
     # 4. 查或建 ROW 维度和 COL 维度
     row_dim_code = f"{object_code}.{section_code}.ROW"
@@ -294,6 +310,14 @@ def _write_excel_results(
         items_written += 1
 
     # 7. 每个 item 创建对应的 RegReportingItemDimension（ROW + COLUMN 各一条）
+    existing_dimension_keys = {
+        (entry.reporting_item_id, entry.dimension_id, entry.member_id)
+        for entry in session.exec(
+            select(RegReportingItemDimension).where(
+                RegReportingItemDimension.reporting_item_id.in_(item_id_map.values())
+            )
+        ).all()
+    }
     for id_entry in parse_result.item_dimensions:
         item_code = id_entry["item_code"]
         item_id = item_id_map.get(item_code)
@@ -306,21 +330,25 @@ def _write_excel_results(
         row_member_id = member_id_map.get(row_member_code)
         col_member_id = member_id_map.get(col_member_code)
 
-        if row_member_id and row_dim.id:
+        row_dimension_key = (item_id, row_dim.id, row_member_id)
+        if row_member_id and row_dim.id and row_dimension_key not in existing_dimension_keys:
             session.add(RegReportingItemDimension(
                 reporting_item_id=item_id,
                 dimension_id=row_dim.id,  # type: ignore[arg-type]
                 member_id=row_member_id,
                 axis="ROW",
             ))
+            existing_dimension_keys.add(row_dimension_key)
 
-        if col_member_id and col_dim.id:
+        col_dimension_key = (item_id, col_dim.id, col_member_id)
+        if col_member_id and col_dim.id and col_dimension_key not in existing_dimension_keys:
             session.add(RegReportingItemDimension(
                 reporting_item_id=item_id,
                 dimension_id=col_dim.id,  # type: ignore[arg-type]
                 member_id=col_member_id,
                 axis="COLUMN",
             ))
+            existing_dimension_keys.add(col_dimension_key)
 
     session.commit()
     return items_written
@@ -357,7 +385,7 @@ async def process_catalog_zip(
         if object_codes:
             upper_codes = {c.upper() for c in object_codes}
             file_sets = [fs for fs in file_sets if fs.object_code.upper() in upper_codes]
-    except Exception as exc:
+    except Exception:
         with Session(engine) as session:
             batch = session.get(RegCatalogBatch, batch_id)
             if batch:
@@ -419,8 +447,9 @@ async def process_catalog_zip(
             # 4b: 解析 Excel（change_type != "INSTRUCTION_ONLY" 时）
             parse_result: excel_parser.ExcelParseResult | None = None
             if fs.change_type != "INSTRUCTION_ONLY" and fs.excel_path:
+                section_code = _section_code_for_object_code(fs.object_code)
                 parse_result = excel_parser.parse_excel(
-                    fs.excel_path, fs.object_code, section_code="PART_I"
+                    fs.excel_path, fs.object_code, section_code=section_code
                 )
 
             # 4c: 解析 Doc + 生成 change_summary
@@ -447,18 +476,19 @@ async def process_catalog_zip(
                 )
 
                 # 写 Instruction
-                existing_instr = session.exec(
-                    select(RegReportingInstruction).where(
-                        RegReportingInstruction.reporting_object_id == rep_obj.id
-                    )
-                ).first()
-                if not existing_instr:
-                    session.add(RegReportingInstruction(
-                        reporting_object_id=rep_obj.id,
-                        instruction_code=f"{fs.object_code}.INSTRUCTION.{fs.version_label or version_label}",
-                        instruction_text=full_text,
-                        source_reference=str(fs.doc_path.name) if fs.doc_path else "",
-                    ))
+                if fs.doc_path:
+                    existing_instr = session.exec(
+                        select(RegReportingInstruction).where(
+                            RegReportingInstruction.reporting_object_id == rep_obj.id
+                        )
+                    ).first()
+                    if not existing_instr:
+                        session.add(RegReportingInstruction(
+                            reporting_object_id=rep_obj.id,
+                            instruction_code=f"{fs.object_code}.INSTRUCTION.{fs.version_label or version_label}",
+                            instruction_text=full_text,
+                            source_reference=str(fs.doc_path.name),
+                        ))
 
                 # 写 Excel 解析结果
                 if parse_result is not None:
@@ -470,6 +500,7 @@ async def process_catalog_zip(
                         object_code=fs.object_code,
                         version_label=fs.version_label or version_label,
                         change_type=fs.change_type,
+                        section_code=_section_code_for_object_code(fs.object_code),
                     )
                 else:
                     session.commit()

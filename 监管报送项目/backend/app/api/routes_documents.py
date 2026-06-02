@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -11,11 +12,13 @@ from app.core.config import get_settings
 from app.core.database import get_session
 from app.models.db_models import (
     DataFieldCatalog,
+    AuditLog,
     DocumentTaskProfile,
     RegDocument,
     RegReportingItem,
     RegReportingObject,
     RegReportingSection,
+    RegSignalReview,
     ReportingItemLineage,
 )
 from app.models.enums import DocumentStatus
@@ -24,12 +27,15 @@ from app.models.schemas import (
     ExcelDiffEntryRead,
     InstructionChangeAnalysisRead,
     ItemChangeScanResultRead,
+    HallucinationMetricsRead,
     LaneSignalRead,
     RawDocumentFileRead,
     RawDocumentTextRead,
     RegDocumentRead,
     RevisionCandidateRead,
     RevisionEntryRead,
+    SignalReviewRequest,
+    SignalReviewResponse,
     TableChangeSignalRead,
     TripletUploadResponse,
 )
@@ -49,6 +55,10 @@ from app.services import excel_parser as _excel_parser
 from app.services.revision_table_parser import parse_revision_table
 from app.services.g31_excel_diff import diff_excel_with_db, summarise_diff
 from app.services.item_change_scanner import scan_and_annotate, build_change_summary
+from app.services.hallucination_guard import (
+    is_signal_eligible_for_downstream,
+    summarize_signal_metrics,
+)
 from app.services.reporting_item_scope import filter_analysis_items
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -484,27 +494,34 @@ def delete_document(document_id: int, session: Session = Depends(get_session)) -
 
     # 1. profile（直接 document_id 关联）
     for row in session.exec(select(DocumentTaskProfile).where(DocumentTaskProfile.document_id == document_id)).all():
-        session.delete(row); counts["profiles"] += 1
+        session.delete(row)
+        counts["profiles"] += 1
 
     # 2. clauses（含其下 semantic items）
     clause_ids = [c.id for c in session.exec(select(RegClause).where(RegClause.document_id == document_id)).all()]
     if clause_ids:
         for s_item in session.exec(select(RegSemanticItem).where(RegSemanticItem.clause_id.in_(clause_ids))).all():
-            session.delete(s_item); counts["semantic_items"] += 1
+            session.delete(s_item)
+            counts["semantic_items"] += 1
         for c in session.exec(select(RegClause).where(RegClause.document_id == document_id)).all():
-            session.delete(c); counts["clauses"] += 1
+            session.delete(c)
+            counts["clauses"] += 1
 
     # 3. tasks（含其下 candidates / impacts / tickets）
     task_ids = [t.id for t in session.exec(select(RegTask).where(RegTask.document_id == document_id)).all()]
     if task_ids:
         for cand in session.exec(select(RegReportingChangeCandidate).where(RegReportingChangeCandidate.task_id.in_(task_ids))).all():
-            session.delete(cand); counts["candidates"] += 1
+            session.delete(cand)
+            counts["candidates"] += 1
         for imp in session.exec(select(RegReportingImpactItem).where(RegReportingImpactItem.task_id.in_(task_ids))).all():
-            session.delete(imp); counts["impacts"] += 1
+            session.delete(imp)
+            counts["impacts"] += 1
         for tk in session.exec(select(TicketDraft).where(TicketDraft.task_id.in_(task_ids))).all():
-            session.delete(tk); counts["tickets"] += 1
+            session.delete(tk)
+            counts["tickets"] += 1
         for t in session.exec(select(RegTask).where(RegTask.document_id == document_id)).all():
-            session.delete(t); counts["tasks"] += 1
+            session.delete(t)
+            counts["tasks"] += 1
 
     # 4. 物理文件（多文件用 ; 分隔）
     if document.storage_path:
@@ -603,6 +620,8 @@ def profile_document(document_id: int, session: Session = Depends(get_session)) 
         raw_response=draft.raw_response,
     )
     session.add(profile)
+    session.flush()
+    _audit_profile_signals(profile, session)
     session.commit()
     session.refresh(profile)
     return _profile_read(profile)
@@ -669,6 +688,9 @@ def _triplet_revision_document_profile(
                     evidence_text=_revision_change_explanation(candidate),
                     confidence=candidate.confidence or 0.7,
                     evidence_verified=True,
+                    source_type="REVISION_TABLE",
+                    grounding_status="RULE_BASED",
+                    grounding_coverage=1.0,
                     matched_item_code=candidate.matched_item_code,
                     match_status=candidate.match_status,
                     composite_match=candidate.composite_match,
@@ -807,6 +829,9 @@ def _excel_diffs_to_profile_signals(
                 evidence_text=diff.evidence,
                 confidence=0.8 if diff.diff_type != "NEW" else 0.75,
                 evidence_verified=True,
+                source_type="EXCEL_DIFF",
+                grounding_status="RULE_BASED",
+                grounding_coverage=1.0,
                 matched_item_code=matched_item_code,
                 match_status=match_status,
                 composite_match=composite_match,
@@ -1169,6 +1194,130 @@ def get_document_profile(
     return _profile_read(profile)
 
 
+@router.get("/{document_id}/hallucination-metrics", response_model=HallucinationMetricsRead)
+def get_document_hallucination_metrics(
+    document_id: int, session: Session = Depends(get_session)
+) -> HallucinationMetricsRead:
+    profile = _latest_profile(document_id, session)
+    return HallucinationMetricsRead(**summarize_signal_metrics(_load_signal_dicts(profile.change_signals)).model_dump())
+
+
+@router.post("/{document_id}/signals/{signal_index}/review", response_model=SignalReviewResponse)
+def review_document_signal(
+    document_id: int,
+    signal_index: int,
+    payload: SignalReviewRequest,
+    session: Session = Depends(get_session),
+) -> SignalReviewResponse:
+    profile = _latest_profile(document_id, session)
+    signals = _load_signal_dicts(profile.change_signals)
+    if signal_index < 0 or signal_index >= len(signals):
+        raise HTTPException(status_code=404, detail="Signal not found")
+
+    signal = signals[signal_index]
+    was_quarantined = not is_signal_eligible_for_downstream(signal)
+    signal["human_review_status"] = payload.action
+    profile.change_signals = _dump_json(signals)
+    session.add(profile)
+
+    review = session.exec(
+        select(RegSignalReview)
+        .where(RegSignalReview.profile_id == profile.id)
+        .where(RegSignalReview.signal_index == signal_index)
+    ).first()
+    if review is None:
+        review = RegSignalReview(
+            document_id=document_id,
+            profile_id=profile.id,
+            signal_index=signal_index,
+            action=payload.action,
+            reviewer=payload.reviewer,
+            comment=payload.comment,
+        )
+    else:
+        review.action = payload.action
+        review.reviewer = payload.reviewer
+        review.comment = payload.comment
+        review.reviewed_at = datetime.utcnow()
+    session.add(review)
+    _add_signal_audit(
+        profile=profile,
+        signal_index=signal_index,
+        signal=signal,
+        action="SIGNAL_REVIEWED",
+        session=session,
+        reviewer=payload.reviewer,
+        comment=payload.comment,
+    )
+    if was_quarantined and payload.action in {"ACCEPTED", "CORRECTED"}:
+        _add_signal_audit(
+            profile=profile,
+            signal_index=signal_index,
+            signal=signal,
+            action="SIGNAL_RELEASED",
+            session=session,
+            reviewer=payload.reviewer,
+            comment=payload.comment,
+        )
+    session.commit()
+    metrics = summarize_signal_metrics(signals)
+    return SignalReviewResponse(
+        signal=TableChangeSignalRead(**signal),
+        metrics=HallucinationMetricsRead(**metrics.model_dump()),
+    )
+
+
+def _latest_profile(document_id: int, session: Session) -> DocumentTaskProfile:
+    profile = session.exec(
+        select(DocumentTaskProfile)
+        .where(DocumentTaskProfile.document_id == document_id)
+        .order_by(DocumentTaskProfile.created_at.desc())
+    ).first()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Document profile not found")
+    return profile
+
+
+def _audit_profile_signals(profile: DocumentTaskProfile, session: Session) -> None:
+    for signal_index, signal in enumerate(_load_signal_dicts(profile.change_signals)):
+        _add_signal_audit(profile, signal_index, signal, "SIGNAL_GENERATED", session)
+        _add_signal_audit(profile, signal_index, signal, "SIGNAL_GROUNDING_EVALUATED", session)
+        if not is_signal_eligible_for_downstream(signal):
+            _add_signal_audit(profile, signal_index, signal, "SIGNAL_QUARANTINED", session)
+
+
+def _add_signal_audit(
+    profile: DocumentTaskProfile,
+    signal_index: int,
+    signal: dict,
+    action: str,
+    session: Session,
+    reviewer: str = "",
+    comment: str = "",
+) -> None:
+    session.add(
+        AuditLog(
+            action=action,
+            target_type="DOCUMENT_SIGNAL",
+            target_id=profile.id,
+            detail=json.dumps(
+                {
+                    "document_id": profile.document_id,
+                    "profile_id": profile.id,
+                    "signal_index": signal_index,
+                    "source_type": signal.get("source_type", "LLM"),
+                    "grounding_status": signal.get("grounding_status", ""),
+                    "grounding_coverage": signal.get("grounding_coverage", 0.0),
+                    "human_review_status": signal.get("human_review_status", "PENDING"),
+                    "reviewer": reviewer,
+                    "comment": comment,
+                },
+                ensure_ascii=False,
+            ),
+        )
+    )
+
+
 def _normalize_document(document: RegDocument) -> RegDocument:
     document.parse_error_message = document.parse_error_message or ""
     document.parser = document.parser or ""
@@ -1288,21 +1437,46 @@ def _load_change_signals(value: str) -> list[TableChangeSignalRead]:
         try:
             signals.append(
                 TableChangeSignalRead(
+                    business_signal_id=item.get("business_signal_id", ""),
+                    item_codes=item.get("item_codes") if isinstance(item.get("item_codes"), list) else [],
                     table_code=item.get("table_code", ""),
                     section_hint=item.get("section_hint", ""),
                     indicator_hint=item.get("indicator_hint", ""),
                     change_type=item.get("change_type", "UNCLEAR"),
                     evidence_text=item.get("evidence_text", ""),
+                    change_summary=item.get("change_summary", ""),
+                    business_summary=item.get("business_summary", ""),
+                    changed_dimension=item.get("changed_dimension", ""),
+                    changed_from=item.get("changed_from", ""),
+                    changed_to=item.get("changed_to", ""),
+                    summary_confidence=float(item.get("summary_confidence", 0.0)),
+                    revision_actions=item.get("revision_actions") if isinstance(item.get("revision_actions"), list) else [],
+                    revision_spans=item.get("revision_spans") if isinstance(item.get("revision_spans"), list) else [],
+                    candidate_sources=item.get("candidate_sources") if isinstance(item.get("candidate_sources"), list) else [],
                     confidence=float(item.get("confidence", 0.7)),
                     evidence_verified=bool(item.get("evidence_verified", True)),
+                    source_type=item.get("source_type", "LLM"),
+                    grounding_status=item.get("grounding_status", ""),
+                    grounding_coverage=float(item.get("grounding_coverage", 0.0)),
+                    matched_excerpt=item.get("matched_excerpt", ""),
+                    human_review_status=item.get("human_review_status", "PENDING"),
                     matched_item_code=item.get("matched_item_code", ""),
                     match_status=item.get("match_status", ""),
                     composite_match=item.get("composite_match") if isinstance(item.get("composite_match"), dict) else {},
+                    llm_summary=item.get("llm_summary") if isinstance(item.get("llm_summary"), dict) else {},
                 )
             )
         except Exception:
             continue
     return signals
+
+
+def _load_signal_dicts(value: str) -> list[dict]:
+    try:
+        raw = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
 
 def _dump_json(value: list[str]) -> str:

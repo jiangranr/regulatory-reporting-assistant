@@ -187,6 +187,43 @@ describe("LineageView", () => {
     expect(wrapper.find(".tree").text()).toContain("其中：1.8.1信贷资产证券化 × B·投资收入（年初至报告期末数）");
   });
 
+  it("deduplicates repeated business signals in the catalog tree", async () => {
+    const workflow = workflowWithSignal({
+      table_code: "G31",
+      section_hint: "第 I 部分：底层资产投资情况",
+      indicator_hint: "举例中的列位由C调整为D/E",
+      change_type: "SCOPE_ADJUST",
+      evidence_text: "举例：某银行购买了 50 万元的信托计划。",
+      confidence: 0.76,
+      evidence_verified: true,
+    });
+    workflow.document_profile!.change_signals = Array.from({ length: 6 }, (_, index) => ({
+      table_code: "G31",
+      section_hint: "第 I 部分：底层资产投资情况",
+      indicator_hint: "举例中的列位由C调整为D/E",
+      change_type: "SCOPE_ADJUST",
+      evidence_text: `举例：某银行购买了 50 万元的信托计划。片段 ${index + 1}`,
+      confidence: 0.76,
+      evidence_verified: true,
+    }));
+
+    const wrapper = mount(LineageView, {
+      props: { workflow },
+      global: { stubs: { LineageGraph: true } },
+    });
+
+    expect(wrapper.find(".tree-header").text()).toContain("1 命中");
+    expect(wrapper.find(".tree").text()).not.toContain("+6");
+
+    const metricNode = wrapper
+      .findAll(".tree-node")
+      .find((node) => node.text().includes("G31.1 举例中的列位由C调整为D/E"));
+    expect(metricNode).toBeTruthy();
+    await metricNode!.trigger("click");
+
+    expect(wrapper.findAll(".tree-node-detail")).toHaveLength(0);
+  });
+
   it("focuses the exact matched signal when opened from an impact item code", () => {
     const workflow = workflowWithSignal({
       indicator_hint: "修正久期",
@@ -259,6 +296,48 @@ describe("LineageView", () => {
     expect(rows[0].find(".evidence-body").text()).not.toContain("[新增");
   });
 
+  it("shows a normalized source paragraph and keeps Word revision fragments in a separate audit area", () => {
+    const workflow = workflowWithSignal({
+      table_code: "G01_IV",
+      section_hint: "填报说明定义",
+      indicator_hint: "11.a.1通过第三方互联网平台吸收的个人定期存款",
+      evidence_text: [
+        "[新增 | 陈施霖 | 2024-12-23] 金融机构",
+        "[新增 | 陈施霖 | 2024-12-23] 互联网",
+        "[新增 | 周世杰 | 2024-11-21] 指项目",
+        "[11.a.1 通过第三方互联网平台吸收的个人定期存款 ] 指项目 11.a 中，银行金融机构吸收的个人定期存款。",
+      ].join("；"),
+      matched_item_code: "G01_IV.PART_IV.11_a_1通过第三方互联网平台吸收的个人定期存款.B_其中_储蓄存款",
+      match_status: "FUZZY_PRECISE",
+      confidence: 0.97,
+    });
+    workflow.document.parsed_text = [
+      "## 当前版本修订动作",
+      "- [新增 | 陈施霖 | 2024-12-23] 金融机构",
+      "- [新增 | 陈施霖 | 2024-12-23] 互联网",
+      "",
+      "## 填报说明正文",
+      "[11.a.1 通过第三方互联网平台吸收的个人定期存款 ] 指项目 11.a 中，银行金融机构吸收的个人定期存款。",
+    ].join("\n");
+
+    const wrapper = mount(LineageView, {
+      props: { workflow },
+      global: { stubs: { LineageGraph: true } },
+    });
+
+    const evidenceBody = wrapper.get(".evidence-body").text();
+    expect(evidenceBody).toBe(
+      "[11.a.1 通过第三方互联网平台吸收的个人定期存款 ] 指项目 11.a 中，银行金融机构吸收的个人定期存款。",
+    );
+    expect(evidenceBody).not.toContain("金融机构；互联网");
+
+    const audit = wrapper.get(".evidence-revision-audit");
+    expect(audit.text()).toContain("Word 修订动作");
+    expect(audit.text()).toContain("新增");
+    expect(audit.text()).toContain("金融机构");
+    expect(audit.text()).toContain("互联网");
+  });
+
   it("surfaces the changed institution from a scope paragraph", () => {
     const wrapper = mount(LineageView, {
       props: {
@@ -276,9 +355,10 @@ describe("LineageView", () => {
 
     const rows = wrapper.findAll(".evidence-row");
 
-    expect(rows[0].find(".evidence-meta").text()).toContain("新增 · 陈施霖 · 2024-12-16");
     expect(rows[0].find(".evidence-body").text()).toContain("直销银行");
-    expect(rows[1].find(".evidence-body").text()).toContain("3．填报机构");
+    expect(rows[0].find(".evidence-body").text()).toContain("3．填报机构");
+    expect(wrapper.get(".evidence-revision-audit").text()).toContain("新增");
+    expect(wrapper.get(".evidence-revision-audit").text()).toContain("直销银行");
   });
 
   it("shows composite semantic match fields and filter conditions", () => {

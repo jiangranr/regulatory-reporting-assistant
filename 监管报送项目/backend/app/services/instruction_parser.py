@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -40,6 +41,16 @@ class RevisionFragment:
 
 
 @dataclass(frozen=True)
+class RevisionSpan:
+    """Word 修订在正文中的原位片段，仅用于前端展示。"""
+    type: str  # "TEXT" | "INSERT" | "DELETE"
+    text: str
+    author: str = ""
+    date: str = ""
+    action: str = ""
+
+
+@dataclass(frozen=True)
 class InstructionParseResult:
     text: str
     html: str
@@ -47,6 +58,7 @@ class InstructionParseResult:
     comments: list[CommentFragment]
     revisions: list[RevisionFragment]
     parser: str
+    revision_spans: list[RevisionSpan] = field(default_factory=list)
     error_message: str = ""
 
 
@@ -89,6 +101,7 @@ def parse_instruction_file(filename: str, content: bytes) -> InstructionParseRes
         docx_content = content if suffix == ".docx" else _convert_doc_to_docx(filename, content)
         comments = _extract_docx_comments(docx_content) if docx_content else []
         revisions = _extract_docx_revisions(docx_content) if docx_content else []
+        revision_spans = _extract_docx_revision_spans(docx_content) if docx_content else []
 
         html = _convert_word_to_html(filename, content)
         if html:
@@ -99,6 +112,7 @@ def parse_instruction_file(filename: str, content: bytes) -> InstructionParseRes
                 highlights=parsed_html.highlights,
                 comments=comments,
                 revisions=revisions,
+                revision_spans=revision_spans,
                 parser=f"{suffix[1:]}_html",
             )
 
@@ -109,6 +123,7 @@ def parse_instruction_file(filename: str, content: bytes) -> InstructionParseRes
         highlights=[],
         comments=[],
         revisions=[],
+        revision_spans=[],
         parser=parsed.parser,
         error_message=parsed.error_message,
     )
@@ -148,6 +163,26 @@ def build_pair_document_text(
             sections.append(f"- {_format_revision_action(rev)}")
     else:
         sections.append("## 当前版本修订动作\n- 未识别到修订追踪。")
+
+    sections.append("")
+
+    if instruction.revision_spans:
+        sections.append(f"## 当前版本原位修订片段（共 {len(instruction.revision_spans)} 段）")
+        for span in instruction.revision_spans[:400]:
+            sections.append(
+                json.dumps(
+                    {
+                        "type": span.type,
+                        "text": span.text,
+                        "author": span.author,
+                        "date": span.date,
+                        "action": span.action,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+    else:
+        sections.append("## 当前版本原位修订片段\n- 未识别到原位修订片段。")
 
     sections.append("")
 
@@ -264,6 +299,100 @@ def _extract_docx_revisions(docx_content: bytes) -> list[RevisionFragment]:
         if text:
             revisions.append(RevisionFragment("DELETE", author, date, text))
     return revisions
+
+
+def _extract_docx_revision_spans(docx_content: bytes) -> list[RevisionSpan]:
+    """Extract paragraph-order tracked-change spans from word/document.xml."""
+    if not docx_content:
+        return []
+    try:
+        with zipfile.ZipFile(io.BytesIO(docx_content)) as zf:
+            if "word/document.xml" not in zf.namelist():
+                return []
+            root = ET.fromstring(zf.read("word/document.xml"))
+    except Exception:
+        return []
+
+    latest_year = _latest_revision_year(root)
+    spans: list[RevisionSpan] = []
+    paragraphs = root.findall(f".//{_W}p")
+    for paragraph_index, paragraph in enumerate(paragraphs):
+        if paragraph_index and spans and spans[-1].text != "\n":
+            spans.append(RevisionSpan(type="TEXT", text="\n"))
+        _collect_revision_spans(paragraph, latest_year, spans, None)
+    return _merge_revision_spans(spans)
+
+
+def _latest_revision_year(root: ET.Element) -> int | None:
+    years: list[int] = []
+    for element in root.iter():
+        if _local_name(element.tag) not in {"ins", "del"}:
+            continue
+        date = element.get(f"{_W}date", "")
+        if match := re.match(r"^(\d{4})", date or ""):
+            years.append(int(match.group(1)))
+    return max(years) if years else None
+
+
+def _collect_revision_spans(
+    element: ET.Element,
+    latest_year: int | None,
+    spans: list[RevisionSpan],
+    revision: dict[str, str] | None,
+) -> None:
+    tag = _local_name(element.tag)
+    if tag in {"ins", "del"}:
+        date = element.get(f"{_W}date", "")
+        year_match = re.match(r"^(\d{4})", date or "")
+        is_current = latest_year is None or (year_match and int(year_match.group(1)) == latest_year)
+        revision = {
+            "type": "INSERT" if tag == "ins" else "DELETE",
+            "author": element.get(f"{_W}author", ""),
+            "date": date,
+            "action": "新增" if tag == "ins" else "删除",
+            "current": "1" if is_current else "0",
+        }
+
+    if tag == "t" and element.text:
+        if revision and revision["type"] == "INSERT" and revision["current"] == "1":
+            spans.append(RevisionSpan("INSERT", element.text, revision["author"], revision["date"], revision["action"]))
+        elif not revision or revision["type"] == "INSERT":
+            spans.append(RevisionSpan("TEXT", element.text))
+    elif tag == "delText" and element.text:
+        if revision and revision["type"] == "DELETE" and revision["current"] == "1":
+            spans.append(RevisionSpan("DELETE", element.text, revision["author"], revision["date"], revision["action"]))
+
+    for child in list(element):
+        _collect_revision_spans(child, latest_year, spans, revision)
+
+
+def _merge_revision_spans(spans: list[RevisionSpan]) -> list[RevisionSpan]:
+    merged: list[RevisionSpan] = []
+    for span in spans:
+        if not span.text:
+            continue
+        if (
+            merged
+            and merged[-1].type == span.type
+            and merged[-1].author == span.author
+            and merged[-1].date == span.date
+            and merged[-1].action == span.action
+        ):
+            previous = merged[-1]
+            merged[-1] = RevisionSpan(
+                type=previous.type,
+                text=previous.text + span.text,
+                author=previous.author,
+                date=previous.date,
+                action=previous.action,
+            )
+        else:
+            merged.append(span)
+    return merged
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
 
 
 def _convert_word_to_html(filename: str, content: bytes) -> str:

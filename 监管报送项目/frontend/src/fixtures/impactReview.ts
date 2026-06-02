@@ -64,4 +64,24 @@ export const IMPACT_REVIEW_RESPONSE = {
     business_added_fields: 0,
     business_removed_fields: 0,
   },
+  system_options: [
+    {
+      system_code: "RPT",
+      system_name: "监管报送系统",
+      system_type: "REPORTING",
+      owner_team: "监管报送团队",
+    },
+    {
+      system_code: "INTERBANK_CORE",
+      system_name: "同业业务系统",
+      system_type: "SOURCE",
+      owner_team: "金融市场科技团队",
+    },
+    {
+      system_code: "VALUATION",
+      system_name: "估值计量系统",
+      system_type: "SOURCE",
+      owner_team: "估值核算团队",
+    },
+  ],
 } satisfies ImpactReviewResponse;

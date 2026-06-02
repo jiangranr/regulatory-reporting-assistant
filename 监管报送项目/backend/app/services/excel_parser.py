@@ -172,7 +172,9 @@ def _business_row_label(sheet: xlrd.sheet.Sheet, row: int, data_col_start: int) 
 
 
 def _is_non_business_row_label(label: str) -> bool:
-    return any(keyword in label for keyword in ("填表人", "复核人", "负责人", "联系人", "联系电话"))
+    return label.strip() == "附注" or any(
+        keyword in label for keyword in ("填表人", "复核人", "负责人", "联系人", "联系电话")
+    )
 
 
 def parse_excel(
@@ -326,7 +328,7 @@ def parse_excel(
 
 
 def _parse_xlsx(file_path: Path, object_code: str, section_code: str) -> ExcelParseResult:
-    """解析 .xlsx 文件（用 openpyxl）。颜色检测用 RGB 值。"""
+    """解析 .xlsx 文件（用 openpyxl）。"""
     import openpyxl
 
     wb = openpyxl.load_workbook(str(file_path), data_only=True)
@@ -337,20 +339,91 @@ def _parse_xlsx(file_path: Path, object_code: str, section_code: str) -> ExcelPa
     result = ExcelParseResult()
     sheet_name = ws.title
 
-    def _openpyxl_role(cell) -> str:
+    def _cell_text(row: int, col: int) -> str:
+        value = ws.cell(row=row + 1, column=col + 1).value
+        return str(value).strip() if value is not None else ""
+
+    def _openpyxl_role(cell, *, is_data_cell: bool) -> str:
         fill = cell.fill
-        if fill and fill.fgColor and fill.fgColor.type == "rgb":
-            rgb = fill.fgColor.rgb.upper()
+        if fill and fill.fgColor and fill.fgColor.type == "indexed":
+            if fill.fgColor.indexed == 55:
+                return "NO_DATA"
+            if fill.fgColor.indexed == 46:
+                return "DERIVED"
+        if fill and fill.fgColor and fill.fgColor.type == "rgb" and fill.fgColor.rgb:
+            rgb = str(fill.fgColor.rgb).upper()
             if rgb in ("FFBFBFBF", "FF808080", "FFC0C0C0", "FFD9D9D9"):
                 return "NO_DATA"
             if rgb in ("FFCC99FF", "FF9966FF", "FFCCAAFF"):
                 return "DERIVED"
-        return "FILLABLE"
+        return "FILLABLE" if is_data_cell else "HEADER"
 
-    for row in ws.iter_rows():
-        for cell in row:
+    max_row = max(
+        (cell.row for row in ws.iter_rows() for cell in row if cell.value is not None),
+        default=ws.max_row,
+    )
+    max_col = max(
+        (cell.column for row in ws.iter_rows() for cell in row if cell.value is not None),
+        default=ws.max_column,
+    )
+
+    header_row = 0
+    data_cols: list[int] = []
+    for row in range(min(max_row, 20)):
+        letter_cols = [
+            col
+            for col in range(max_col)
+            if re.fullmatch(r"[A-Z]{1,2}", _cell_text(row, col))
+        ]
+        for group in _consecutive_groups(letter_cols):
+            if len(group) > len(data_cols):
+                header_row = row
+                data_cols = group
+
+    if not data_cols:
+        return result
+
+    data_col_start = min(data_cols)
+
+    def _row_has_number_and_label(row: int) -> bool:
+        values = [ws.cell(row=row + 1, column=col + 1).value for col in range(data_col_start)]
+        has_number = any(isinstance(value, (int, float)) for value in values)
+        has_label = any(isinstance(value, str) and value.strip() for value in values)
+        return has_number and has_label
+
+    data_row_start = next(
+        (row for row in range(header_row + 1, max_row) if _row_has_number_and_label(row)),
+        max_row,
+    )
+    data_row_end = data_row_start
+    while data_row_end < max_row and _row_has_number_and_label(data_row_end):
+        data_row_end += 1
+
+    merge_map: dict[tuple[int, int], dict] = {}
+    for merged_range in ws.merged_cells.ranges:
+        for row in range(merged_range.min_row - 1, merged_range.max_row):
+            for col in range(merged_range.min_col - 1, merged_range.max_col):
+                merge_map[(row, col)] = {
+                    "r1": merged_range.min_row - 1,
+                    "r2": merged_range.max_row,
+                    "c1": merged_range.min_col - 1,
+                    "c2": merged_range.max_col,
+                }
+
+    role_map: dict[tuple[int, int], str] = {}
+    for row in range(max_row):
+        for col in range(max_col):
+            cell = ws.cell(row=row + 1, column=col + 1)
+            is_data_cell = row in range(data_row_start, data_row_end) and col in data_cols
+            role = _openpyxl_role(cell, is_data_cell=is_data_cell)
+            fill = cell.fill
+            style = {
+                "fill_type": fill.fill_type,
+                "fill_color_type": fill.fgColor.type,
+                "fill_color": fill.fgColor.index,
+                "role": role,
+            }
             r, c = cell.row - 1, cell.column - 1
-            role = _openpyxl_role(cell)
             raw_text = str(cell.value).strip() if cell.value is not None else ""
             result.template_cells.append({
                 "sheet_name": sheet_name,
@@ -359,8 +432,86 @@ def _parse_xlsx(file_path: Path, object_code: str, section_code: str) -> ExcelPa
                 "excel_ref": _excel_ref(r, c),
                 "raw_text": raw_text,
                 "cell_type": role,
-                "style_json": "{}",
-                "merge_json": "{}",
+                "style_json": json.dumps(style),
+                "merge_json": json.dumps(merge_map.get((r, c), {})),
+            })
+            role_map[(r, c)] = role
+
+    col_labels: dict[int, str] = {}
+    for col in data_cols:
+        label_parts = [
+            _cell_text(row, col)
+            for row in range(header_row, data_row_start)
+            if _cell_text(row, col)
+        ]
+        label = "·".join(label_parts) if label_parts else f"COL_{col}"
+        col_labels[col] = label
+        result.dimension_members.append({
+            "member_code": f"{object_code}.{section_code}.COL.{_slugify(label)}",
+            "member_name": label,
+            "axis": "COLUMN",
+            "display_order": col - data_col_start,
+            "source_cell_ref": _excel_ref(data_row_start - 1, col),
+        })
+
+    row_labels: dict[int, str] = {}
+    label_col = max(data_col_start - 1, 0)
+    for row in range(data_row_start, data_row_end):
+        label = next(
+            (
+                _cell_text(row, col)
+                for col in range(data_col_start - 1, -1, -1)
+                if _cell_text(row, col) and not re.fullmatch(r"\d+(?:\.0+)?", _cell_text(row, col))
+            ),
+            f"ROW_{row}",
+        )
+        row_labels[row] = label
+        result.dimension_members.append({
+            "member_code": f"{object_code}.{section_code}.ROW.{_slugify(label)}",
+            "member_name": label,
+            "axis": "ROW",
+            "display_order": row - data_row_start,
+            "source_cell_ref": _excel_ref(row, label_col),
+        })
+
+    seen_codes: set[str] = set()
+    for row in range(data_row_start, data_row_end):
+        row_label = row_labels[row]
+        if _is_non_business_row_label(row_label):
+            continue
+        row_slug = _slugify(row_label)
+
+        for col in data_cols:
+            role = role_map[(row, col)]
+            if role in {"NO_DATA", "HEADER"}:
+                continue
+
+            col_label = col_labels[col]
+            col_slug = _slugify(col_label)
+            item_code = f"{object_code}.{section_code}.{row_slug}.{col_slug}"
+            original_code = item_code
+            suffix_n = 1
+            while item_code in seen_codes:
+                item_code = f"{original_code}_{suffix_n}"
+                suffix_n += 1
+            seen_codes.add(item_code)
+
+            result.items.append({
+                "item_code": item_code,
+                "item_name": f"{row_label}-{col_label}",
+                "source_cell_ref": _excel_ref(row, col),
+                "cell_role": role,
+                "row_label": row_label,
+                "column_label": col_label,
+                "is_fillable": role == "FILLABLE",
+                "is_derived": role == "DERIVED",
+                "data_type": "DECIMAL",
+                "item_type": "DERIVED" if role == "DERIVED" else "MEASURE",
+            })
+            result.item_dimensions.append({
+                "item_code": item_code,
+                "row_member_code": f"{object_code}.{section_code}.ROW.{row_slug}",
+                "col_member_code": f"{object_code}.{section_code}.COL.{col_slug}",
             })
 
     return result

@@ -6,8 +6,9 @@
                                             灌 1104 基础目录（含 G31 报表对象 + PART_I section）
   3. _ensure_g31_detail_items(session)      补齐 5 个 G31 PART_I.1_0.* 详细 item（A/B/C/D/E）
                                             —— 这些原本来源于 Excel 解析，bootstrap 里用代码兜底
-  4. seed_g31_lineage_reference.main()      灌 7 系统 / 26 字段 / 36 条血缘
-  5. 打印 D 列实际命中情况
+  4. seed_g31_lineage_reference.main()      灌 G31 参考血缘
+  5. seed_g01_iv_lineage_reference.main()   对已导入的 G01_IV 重点指标灌参考血缘
+  6. 打印 G31 D 列实际命中情况
 
 幂等：可重复运行。
 """
@@ -27,6 +28,7 @@ from app.models.db_models import (
 )
 from app.api.routes_reporting import _upsert_seed_catalog
 from app.services.reporting_seed import build_1104_seed_catalog
+from scripts import seed_g01_iv_lineage_reference as g01_seed
 from scripts import seed_g31_lineage_reference as g31_seed
 
 
@@ -151,23 +153,26 @@ def _print_d_column_lineage(session: Session) -> None:
 
 
 def main() -> None:
-    print("[1/4] init_db: 建表 / 补列 ...")
+    print("[1/5] init_db: 建表 / 补列 ...")
     init_db()
 
-    print("[2/4] 灌 1104 基础目录 ...")
+    print("[2/5] 灌 1104 基础目录 ...")
     with Session(engine) as session:
         catalog = build_1104_seed_catalog()
         _upsert_seed_catalog(session, catalog)
         session.commit()
 
-    print("[3/4] 补齐 5 个 G31 详细 item ...")
+    print("[3/5] 补齐 5 个 G31 详细 item ...")
     with Session(engine) as session:
         inserted, existing = _ensure_g31_detail_items(session)
         session.commit()
         print(f"        新增 {inserted} 条，更新 {existing} 条")
 
-    print("[4/4] 灌 G31 字段目录 + 血缘 ...")
+    print("[4/5] 灌 G31 字段目录 + 血缘 ...")
     g31_seed.main()
+
+    print("[5/5] 灌 G01_IV 互联网个人存款重点指标参考血缘 ...")
+    g01_seed.main()
 
     with Session(engine) as session:
         _print_d_column_lineage(session)

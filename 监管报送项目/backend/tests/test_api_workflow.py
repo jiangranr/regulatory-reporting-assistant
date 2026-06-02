@@ -1,7 +1,54 @@
 from fastapi.testclient import TestClient
 import json
+from sqlmodel import Session
 
+from app.core.database import engine
 from app.main import app
+from app.models.db_models import DocumentTaskProfile
+
+
+def _create_task_with_isolated_profile(client: TestClient) -> int:
+    upload_response = client.post(
+        "/api/documents/upload",
+        files={
+            "file": (
+                "g24_isolated_notice.txt",
+                "监管要求调整G24最大百家金融机构同业融入情况表中同业融入余额统计口径。".encode(
+                    "utf-8"
+                ),
+                "text/plain",
+            )
+        },
+    )
+    assert upload_response.status_code == 201
+    document_id = upload_response.json()["id"]
+    with Session(engine) as session:
+        session.add(
+            DocumentTaskProfile(
+                document_id=document_id,
+                affected_table_codes='["G24"]',
+                in_scope_tables='["G24"]',
+                change_signals=json.dumps(
+                    [
+                        {
+                            "table_code": "G24",
+                            "indicator_hint": "最大百家金融机构同业融入余额",
+                            "change_type": "SCOPE_ADJUST",
+                            "evidence_text": "伪造证据：新增不存在的统计口径。",
+                            "confidence": 0.3,
+                            "source_type": "LLM",
+                            "grounding_status": "UNVERIFIED",
+                            "human_review_status": "PENDING",
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        session.commit()
+    task_response = client.post(f"/api/tasks/from-document/{document_id}")
+    assert task_response.status_code == 201
+    return task_response.json()["id"]
 
 
 def test_document_to_ticket_workflow():
@@ -107,3 +154,35 @@ def test_ticket_generation_returns_historical_cases_from_existing_tickets():
     assert histories[0]["title"]
     assert histories[0]["reuse_score"] > 0
     assert histories[0]["matched_item_codes"] == ["G24.MAIN.INTERBANK_BORROWING_BAL_TOP100"]
+
+
+def test_ticket_generation_does_not_bypass_isolated_profile_signals():
+    client = TestClient(app)
+    client.post("/api/reporting/seed-1104")
+    task_id = _create_task_with_isolated_profile(client)
+
+    impact_response = client.post(f"/api/tasks/{task_id}/analyze-impact")
+    assert impact_response.status_code == 200
+    assert impact_response.json()["impacts"] == []
+
+    ticket_response = client.post(f"/api/tasks/{task_id}/generate-ticket")
+
+    assert ticket_response.status_code == 200
+    workflow = client.get(f"/api/tasks/{task_id}/workflow").json()
+    assert workflow["impact_items"] == []
+    assert all(not candidate["reporting_object_code"] for candidate in workflow["reporting_candidates"])
+
+
+def test_impact_review_confirmation_does_not_bypass_isolated_profile_signals():
+    client = TestClient(app)
+    client.post("/api/reporting/seed-1104")
+    task_id = _create_task_with_isolated_profile(client)
+    client.post(f"/api/tasks/{task_id}/analyze-impact")
+    review = client.get(f"/api/tasks/{task_id}/impact-review").json()["review"]
+
+    confirm_response = client.post(f"/api/tasks/{task_id}/impact-review/confirm", json={"review": review})
+
+    assert confirm_response.status_code == 200
+    workflow = client.get(f"/api/tasks/{task_id}/workflow").json()
+    assert workflow["impact_items"] == []
+    assert all(not candidate["reporting_object_code"] for candidate in workflow["reporting_candidates"])

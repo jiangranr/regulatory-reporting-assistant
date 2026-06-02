@@ -77,7 +77,7 @@ def test_preferred_stock_balance_builds_concept_plus_measure_composite_match():
     assert match.conditions == [
         {
             "field_code": "ods_invest_position.asset_type",
-            "field_name": "投资资产类型",
+            "field_name": "投资资产类型（债券/权益/公募基金/私募/ABS等）",
             "operator": "=",
             "value_code": "PREFERRED_STOCK",
             "value_name": "优先股",
@@ -127,7 +127,7 @@ def test_issuer_type_builds_semantic_field_match_without_measure():
     assert match.measure_fields == [
         {
             "field_code": "bond_investment.issuer_type",
-            "field_name": "债券发行人类型",
+            "field_name": "债券发行人类型（政府/金融机构/企业等）",
             "table_name": "bond_investment",
             "column_name": "issuer_type",
             "field_role": "DIMENSION_FIELD",

@@ -420,6 +420,23 @@ class AuditLog(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class RegSignalReview(SQLModel, table=True):
+    __tablename__ = "reg_signal_reviews"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "signal_index", name="uk_profile_signal_review"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    document_id: int = Field(index=True)
+    profile_id: int = Field(index=True)
+    signal_index: int
+    action: str  # ACCEPTED / REJECTED / CORRECTED
+    reviewer: str
+    comment: str = Field(default="", sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    reviewed_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class RegClause(SQLModel, table=True):
     __tablename__ = "reg_clauses"
 

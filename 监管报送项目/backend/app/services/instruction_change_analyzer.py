@@ -1,5 +1,6 @@
 """G31 填报说明版本变更分析器：综合批注、修订、高亮生成 LLM 变更摘要。"""
 import asyncio
+import re
 from dataclasses import dataclass
 
 from app.services.instruction_parser import (
@@ -34,6 +35,43 @@ class InstructionChangeAnalysis:
     error_message: str = ""
 
 
+def _filter_positional_relabels(revisions: list[RevisionFragment]) -> list[RevisionFragment]:
+    """剔除因插入新字段导致的字母位次顺延信号。
+
+    识别条件：DELETE 的 text 是单个大写字母，且同作者的 INSERT 列表中存在
+    该字母的后继字母（ord+1），说明这只是序号顺延，不是内容变更。
+    """
+    _SINGLE_LETTER = re.compile(r'^[A-Z]$')
+
+    # 收集所有 INSERT 的单字母，按作者分组
+    inserted_letters: dict[str, set[str]] = {}
+    for r in revisions:
+        if r.change_type == "INSERT" and _SINGLE_LETTER.match(r.text.strip()):
+            inserted_letters.setdefault(r.author, set()).add(r.text.strip())
+
+    filtered: list[RevisionFragment] = []
+    for r in revisions:
+        if r.change_type == "DELETE" and _SINGLE_LETTER.match(r.text.strip()):
+            successor = chr(ord(r.text.strip()) + 1)
+            if successor in inserted_letters.get(r.author, set()):
+                continue  # 位次顺延，跳过
+        filtered.append(r)
+
+    # 同步移除已配对的单字母 INSERT（位次顺延产生的新编号本身也无需进 LLM）
+    paired_deletes: set[str] = set()
+    for r in revisions:
+        if r.change_type == "DELETE" and _SINGLE_LETTER.match(r.text.strip()):
+            successor = chr(ord(r.text.strip()) + 1)
+            if successor in inserted_letters.get(r.author, set()):
+                paired_deletes.add(successor)
+
+    return [
+        r for r in filtered
+        if not (r.change_type == "INSERT" and _SINGLE_LETTER.match(r.text.strip())
+                and r.text.strip() in paired_deletes)
+    ]
+
+
 async def analyze_instruction_changes(
     instruction: InstructionParseResult,
     object_code: str,
@@ -46,7 +84,7 @@ async def analyze_instruction_changes(
     调用 LLM 输出"此版本填报说明相对上一版本有哪些变更需注意"。
     """
     comments = instruction.comments
-    revisions = current_version_revisions(instruction.revisions)
+    revisions = _filter_positional_relabels(current_version_revisions(instruction.revisions))
     highlights = instruction.highlights
 
     messages = [
@@ -57,6 +95,8 @@ async def analyze_instruction_changes(
                 "任务：根据 Word 批注、当前版本修订动作和重点标注，总结本版本填报说明相对上一版本的变更。"
                 "变更类型包括：统计口径调整、填报方法变化、指标新增/删除、填报范围变化、其他注意事项。"
                 "evidence 必须直接引用原文或批注原话，不得编造。"
+                "注意：如果某条修订仅涉及标点符号（逗号、句号等）、空格或格式调整，"
+                "视为形式变更，不列入 key_changes，可在 uncertain_items 中注明\"形式变更\"并跳过。"
             ),
         },
         {

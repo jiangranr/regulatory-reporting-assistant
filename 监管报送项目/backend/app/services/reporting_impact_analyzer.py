@@ -23,6 +23,7 @@ class ReportingImpactDraft(BaseModel):
     sub_ticket_triggers: dict[str, str] = {}
     confidence_level: str = "MEDIUM"
     risk_level: RiskLevel = RiskLevel.MEDIUM
+    change_axis: str = "UNCLEAR"  # ROW / COLUMN / CELL / UNCLEAR
 
 
 def analyze_reporting_impacts(
@@ -50,9 +51,15 @@ def analyze_reporting_impacts(
     for item_code, group in grouped.items():
         change = max(group, key=lambda c: c.confidence_score)
         signal_count = len(group)
+        # 多条信号合并时，change_axis 取出现次数最多的；UNCLEAR 权重最低。
+        axis_counts: dict[str, int] = {}
+        for c in group:
+            axis_counts[c.change_axis] = axis_counts.get(c.change_axis, 0) + 1
+        axis_counts.pop("UNCLEAR", None)
+        group_axis = max(axis_counts, key=lambda k: axis_counts[k]) if axis_counts else "UNCLEAR"
         semantic_impact = _semantic_change_to_impact(change)
         if semantic_impact is not None:
-            impacts.append(semantic_impact)
+            impacts.append(semantic_impact.model_copy(update={"change_axis": group_axis}))
             continue
 
         lineage_rows = lineage_by_item.get(change.reporting_item_code, [])
@@ -105,6 +112,7 @@ def analyze_reporting_impacts(
                 sub_ticket_triggers=ticket_scope.sub_ticket_triggers,
                 confidence_level="HIGH" if change.confidence_score >= 0.8 else "MEDIUM",
                 risk_level=RiskLevel.HIGH if change.reporting_object_code in {"G24", "G21", "G25"} else RiskLevel.MEDIUM,
+                change_axis=group_axis,
             )
         )
     return impacts

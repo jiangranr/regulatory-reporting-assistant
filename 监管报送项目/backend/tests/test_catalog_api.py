@@ -4,6 +4,7 @@ import zipfile
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.catalog_ingestor import _section_code_for_object_code
 
 
 def _make_test_zip() -> bytes:
@@ -61,3 +62,8 @@ def test_upload_non_zip_returns_400():
         files={"file": ("readme.txt", b"not a zip", "text/plain")},
     )
     assert response.status_code == 400
+
+
+def test_section_code_for_suffixed_reporting_object():
+    assert _section_code_for_object_code("G01_IV") == "PART_IV"
+    assert _section_code_for_object_code("G31") == "PART_I"
