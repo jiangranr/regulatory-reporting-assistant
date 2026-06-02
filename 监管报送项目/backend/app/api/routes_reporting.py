@@ -1,5 +1,7 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
 from app.core.database import get_session
 from app.models.db_models import (
@@ -16,6 +18,8 @@ from app.models.db_models import (
     RegReportingSystem,
     RegReportingVersion,
     ReportingItemLineage,
+    RegTask,
+    TicketDraft,
 )
 from app.models.schemas import (
     ReportingItemRead,
@@ -254,6 +258,138 @@ def recommend_source_endpoint(
         ],
         "unresolved": result.unresolved,
         "escalate_to_human": result.escalate_to_human,
+    }
+
+
+@router.get("/dashboard-stats")
+def get_dashboard_stats(session: Session = Depends(get_session)) -> dict:
+    confirmed_lineage: int = session.exec(
+        select(func.count(ReportingItemLineage.id)).where(
+            ReportingItemLineage.mapping_status.in_(["CONFIRMED", "SEED_CONFIRMED"])
+        )
+    ).one()
+
+    total_lineage: int = session.exec(
+        select(func.count(ReportingItemLineage.id)).where(
+            ReportingItemLineage.mapping_status != "RETIRED"
+        )
+    ).one()
+
+    pending_tickets: int = session.exec(
+        select(func.count(TicketDraft.id)).where(TicketDraft.status == "DRAFT")
+    ).one()
+
+    month_start = datetime.now(timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+    )
+    confirmed_tickets_month: int = session.exec(
+        select(func.count(TicketDraft.id)).where(
+            TicketDraft.status == "CONFIRMED",
+            TicketDraft.created_at >= month_start,
+        )
+    ).one()
+
+    active_tasks: int = session.exec(
+        select(func.count(RegTask.id))
+    ).one()
+
+    pending_review: int = session.exec(
+        select(func.count(RegTask.id)).where(RegTask.status == "IMPACT_ANALYZED")
+    ).one()
+
+    return {
+        "confirmed_lineage": confirmed_lineage,
+        "total_lineage": total_lineage,
+        "pending_tickets": pending_tickets,
+        "confirmed_tickets_month": confirmed_tickets_month,
+        "active_tasks": active_tasks,
+        "pending_review": pending_review,
+    }
+
+
+@router.get("/source-fields")
+def list_source_fields(
+    owner_team: str | None = None,
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    """列出所有参与血缘的源字段及其监管依赖数量。下游团队用来查看自己负责的字段。"""
+    dep_counts: dict[int, int] = {}
+    for field_id in session.exec(
+        select(ReportingItemLineage.data_field_id).where(
+            ReportingItemLineage.mapping_status != "RETIRED"
+        )
+    ).all():
+        dep_counts[field_id] = dep_counts.get(field_id, 0) + 1
+
+    query = (
+        select(DataFieldCatalog, DataSystemCatalog)
+        .join(DataSystemCatalog, DataSystemCatalog.id == DataFieldCatalog.data_system_id)
+        .where(DataFieldCatalog.data_system_id.isnot(None))
+        .where(DataFieldCatalog.id.in_(list(dep_counts.keys())))
+    )
+    if owner_team:
+        query = query.where(
+            (DataFieldCatalog.owner_team == owner_team) | (DataSystemCatalog.owner_team == owner_team)
+        )
+
+    result = []
+    for (field, system) in session.exec(query).all():
+        result.append({
+            "field_code": field.field_code,
+            "field_name": field.field_name,
+            "system_code": system.system_code,
+            "system_name": system.system_name,
+            "owner_team": field.owner_team or system.owner_team or "",
+            "regulatory_dependency_count": dep_counts.get(field.id, 0),
+        })
+    return result
+
+
+@router.get("/source-fields/{field_code}/dependencies")
+def get_source_field_dependencies(
+    field_code: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """查询单个源字段被哪些监管指标依赖（反向血缘查询）。下游数据治理的核心入口。"""
+    data_field = session.exec(
+        select(DataFieldCatalog).where(DataFieldCatalog.field_code == field_code)
+    ).first()
+    if data_field is None:
+        raise HTTPException(status_code=404, detail=f"Field not found: {field_code}")
+
+    rows = session.exec(
+        select(ReportingItemLineage, RegReportingItem)
+        .join(RegReportingItem, RegReportingItem.id == ReportingItemLineage.reporting_item_id)
+        .where(
+            ReportingItemLineage.data_field_id == data_field.id,
+            ReportingItemLineage.mapping_status != "RETIRED",
+        )
+    ).all()
+
+    system = session.exec(
+        select(DataSystemCatalog).where(DataSystemCatalog.id == data_field.data_system_id)
+    ).first()
+
+    dependencies = [
+        {
+            "reporting_item_code": item.item_code,
+            "reporting_item_name": item.item_name,
+            "reporting_object_code": item.item_code.split(".")[0] if item.item_code else "",
+            "lineage_role": lin.lineage_role,
+            "mapping_status": lin.mapping_status,
+            "confidence_level": lin.confidence_level,
+        }
+        for (lin, item) in rows
+    ]
+
+    return {
+        "field_code": field_code,
+        "field_name": data_field.field_name,
+        "owner_team": data_field.owner_team or (system.owner_team if system else "") or "",
+        "system_code": system.system_code if system else "",
+        "system_name": system.system_name if system else "",
+        "regulatory_dependencies": dependencies,
+        "dependency_count": len(dependencies),
     }
 
 

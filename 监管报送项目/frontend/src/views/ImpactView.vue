@@ -12,7 +12,7 @@
           字段定位
         </button>
         <button class="btn primary" @click="$emit('continue')">
-          生成工单
+          复核并拆单
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
         </button>
       </div>
@@ -47,6 +47,21 @@
             >{{ obj }}</span>
           </span>
         </div>
+      </div>
+    </div>
+
+    <!-- AI 分析中 banner -->
+    <div v-if="busy" class="ai-analyzing-banner mt-24">
+      <div class="ai-analyzing-icon">
+        <span class="ai-pulse"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;position:relative;z-index:1;"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      </div>
+      <div class="ai-analyzing-text">
+        <div class="ai-analyzing-title">AI 正在分析影响范围…</div>
+        <div class="ai-analyzing-sub">LLM 正在读取变更证据和血缘上下文，生成 8 种影响类型的智能研判，预计 15-30 秒</div>
+      </div>
+      <div class="ai-analyzing-dots">
+        <span></span><span></span><span></span>
       </div>
     </div>
 
@@ -116,7 +131,12 @@
               </div>
               <div v-else-if="item.reporting_item_code" class="mono impact-code-line">{{ item.reporting_item_code }}</div>
             </td>
-            <td><span class="tag outline">{{ item.impact_type }}</span></td>
+            <td>
+              <div class="impact-type-cell">
+                <span :class="['tag', impactTypeColor(item.impact_type)]">{{ impactTypeLabel(item.impact_type) }}</span>
+                <span v-if="item.llm_analyzed" class="ai-badge" title="本条影响分析由 LLM 根据血缘上下文智能生成">✦ AI</span>
+              </div>
+            </td>
             <td>
               <div class="radius-popover">
                 <div
@@ -734,6 +754,34 @@ const highCount = computed(() => impacts.value.filter((i: any) => i.risk_level =
 const medCount = computed(() => impacts.value.filter((i: any) => i.risk_level === "MEDIUM").length || Math.ceil(Number(signalCount.value) * 0.6) || 0);
 const lowCount = computed(() => impacts.value.filter((i: any) => i.risk_level === "LOW").length || 0);
 
+// ── 影响类型：8 种中文标签 + 颜色 ─────────────────────────────
+const IMPACT_TYPE_LABELS: Record<string, string> = {
+  INDICATOR_SCOPE:     "指标口径调整",
+  REPORT_STRUCTURE:    "报表结构调整",
+  SOURCE_FIELD_CHANGE: "源字段变更",
+  ETL_LOGIC_CHANGE:    "加工逻辑变更",
+  INSTITUTION_SCOPE:   "机构范围调整",
+  VALIDATION_RULE:     "校验规则变更",
+  SUPPLEMENT_DATA:     "补录要求新增",
+  FREQUENCY_DEADLINE:  "频度/时限调整",
+  // semantic fallback 类型
+  SEMANTIC_FIELD_SCOPE:    "语义字段命中",
+  COMPOSITE_SEMANTIC_SCOPE:"组合语义命中",
+  INDICATOR_SCOPE_CHANGE:  "指标口径调整",
+};
+const IMPACT_TYPE_COLORS: Record<string, string> = {
+  INDICATOR_SCOPE:     "amber",
+  REPORT_STRUCTURE:    "blue",
+  SOURCE_FIELD_CHANGE: "violet",
+  ETL_LOGIC_CHANGE:    "orange",
+  INSTITUTION_SCOPE:   "amber",
+  VALIDATION_RULE:     "red",
+  SUPPLEMENT_DATA:     "outline",
+  FREQUENCY_DEADLINE:  "green",
+};
+const impactTypeLabel = (t: string) => IMPACT_TYPE_LABELS[t] ?? t;
+const impactTypeColor = (t: string) => IMPACT_TYPE_COLORS[t] ?? "outline";
+
 const riskLabel = (r: RiskLevel | string): string =>
   ({ LOW: "低", MEDIUM: "中", HIGH: "高" } as Record<string, string>)[r] ?? r;
 const riskColor = (r: RiskLevel | string): string =>
@@ -979,5 +1027,90 @@ function effectiveChangeType(signal: { change_type: TableChangeType; evidence_te
   color: rgba(67, 56, 202, 1);
   padding: 1px 5px;
   border-radius: 4px;
+}
+
+/* ── AI 分析中 banner ──────────────────────────────────────── */
+.ai-analyzing-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #fff8f1 0%, #fffcfa 100%);
+  border: 1px solid rgba(234, 84, 4, 0.2);
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(234, 84, 4, 0.08);
+}
+.ai-analyzing-icon {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--orange-600, #ea580c);
+}
+.ai-pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(234, 84, 4, 0.12);
+  animation: ai-pulse-ring 1.8s ease-out infinite;
+}
+@keyframes ai-pulse-ring {
+  0%   { transform: scale(0.8); opacity: 0.9; }
+  70%  { transform: scale(1.4); opacity: 0; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+.ai-analyzing-text { flex: 1; min-width: 0; }
+.ai-analyzing-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--orange-700, #c2410c);
+  margin-bottom: 3px;
+}
+.ai-analyzing-sub {
+  font-size: 12px;
+  color: var(--ink-500);
+  line-height: 1.5;
+}
+.ai-analyzing-dots {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.ai-analyzing-dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--orange-400, #fb923c);
+  animation: ai-dot-bounce 1.2s ease-in-out infinite;
+}
+.ai-analyzing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.ai-analyzing-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes ai-dot-bounce {
+  0%, 80%, 100% { transform: translateY(0);    opacity: 0.4; }
+  40%            { transform: translateY(-6px); opacity: 1; }
+}
+
+/* ── 影响类型列：AI 徽章 ────────────────────────────────────── */
+.impact-type-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: flex-start;
+}
+.ai-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--orange-700, #c2410c);
+  background: linear-gradient(135deg, #fff7ed, #ffedd5);
+  border: 1px solid rgba(234, 84, 4, 0.25);
+  border-radius: 6px;
+  padding: 1px 6px;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
 }
 </style>

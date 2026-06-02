@@ -107,7 +107,8 @@ export type PageId =
   | "catalog"
   | "library"
   | "concepts"
-  | "indicator-qa";
+  | "indicator-qa"
+  | "data-assets";
 
 const props = defineProps<{
   activePage: PageId;
@@ -155,10 +156,11 @@ const mainSteps = [
 ];
 
 const secondaryItems = [
-  { id: "indicator-qa" as PageId, icon: "✦", label: "指标问答" },
-  { id: "catalog" as PageId, icon: "⬆", label: "报表目录" },
-  { id: "library" as PageId, icon: "◈", label: "规则与口径" },
-  { id: "concepts" as PageId, icon: "❋", label: "监管概念库" },
+  { id: "indicator-qa"  as PageId, icon: "✦", label: "指标问答" },
+  { id: "catalog"       as PageId, icon: "⬆", label: "报表目录" },
+  { id: "data-assets"   as PageId, icon: "◉", label: "数据资产" },
+  { id: "library"       as PageId, icon: "◈", label: "规则与口径" },
+  { id: "concepts"      as PageId, icon: "❋", label: "监管概念库" },
 ];
 
 // Mark steps before the active one as complete (only in main flow)
@@ -180,6 +182,7 @@ const crumbMap: Record<PageId, string[]> = {
   library:        ["监管报送治理", "规则与口径"],
   concepts:       ["监管报送治理", "监管概念库"],
   "indicator-qa": ["监管报送治理", "指标问答"],
+  "data-assets":  ["监管报送治理", "数据资产"],
 };
 
 const crumbs = computed(() => crumbMap[props.activePage] ?? ["监管报送治理"]);

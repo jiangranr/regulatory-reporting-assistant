@@ -2,6 +2,7 @@ import type {
   CatalogBatch,
   Concept,
   ConceptMatchHit,
+  DashboardStats,
   DocumentTaskProfile,
   ExtractionResult,
   ImpactReviewContent,
@@ -11,6 +12,8 @@ import type {
   RegDocument,
   RegTask,
   RuleCard,
+  SourceField,
+  SourceFieldDependencies,
   TaskWorkflow,
   TicketPlanResponse,
   ImpactItem,
@@ -74,6 +77,9 @@ export interface ApiClient {
   listCatalogBatches(): Promise<CatalogBatch[]>;
   askIndicator(question: string, itemCode?: string, anomalyValue?: string): Promise<QAResponse>;
   listQueryableItems(objectCode?: string): Promise<QAQueryableItem[]>;
+  getDashboardStats(): Promise<DashboardStats>;
+  listSourceFields(ownerTeam?: string): Promise<SourceField[]>;
+  getSourceFieldDependencies(fieldCode: string): Promise<SourceFieldDependencies>;
   bootstrapAll(): Promise<Record<string, unknown>>;
 }
 
@@ -82,6 +88,10 @@ export function createApiClient(baseUrl = "/api", fetcher: typeof fetch = fetch)
     const response = await fetcher(`${baseUrl}${path}`, init);
     if (!response.ok) {
       const message = await response.text();
+      const detail = parseErrorDetail(message);
+      if (detail) {
+        throw new Error(detail);
+      }
       throw new Error(message || `Request failed: ${response.status}`);
     }
     return response.json() as Promise<T>;
@@ -219,9 +229,26 @@ export function createApiClient(baseUrl = "/api", fetcher: typeof fetch = fetch)
       const params = objectCode ? `?object_code=${encodeURIComponent(objectCode)}` : "";
       return request<QAQueryableItem[]>(`/indicator-qa/items${params}`);
     },
+    getDashboardStats: () =>
+      request<DashboardStats>("/reporting/dashboard-stats"),
+    listSourceFields: (ownerTeam) => {
+      const params = ownerTeam ? `?owner_team=${encodeURIComponent(ownerTeam)}` : "";
+      return request<SourceField[]>(`/reporting/source-fields${params}`);
+    },
+    getSourceFieldDependencies: (fieldCode) =>
+      request<SourceFieldDependencies>(`/reporting/source-fields/${encodeURIComponent(fieldCode)}/dependencies`),
     bootstrapAll: () =>
       request<Record<string, unknown>>("/reporting/bootstrap-all", { method: "POST" }),
   };
+}
+
+function parseErrorDetail(message: string): string {
+  try {
+    const payload = JSON.parse(message) as { detail?: unknown };
+    return typeof payload.detail === "string" ? payload.detail : "";
+  } catch {
+    return "";
+  }
 }
 
 export const apiClient = createApiClient();

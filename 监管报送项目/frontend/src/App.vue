@@ -82,6 +82,7 @@
       :busy="busy"
     />
     <ConceptsView v-else-if="activePage === 'concepts'" />
+    <DataAssetsView v-else-if="activePage === 'data-assets'" />
   </AppShell>
 </template>
 
@@ -100,6 +101,7 @@ import CatalogUploadView from "@/views/CatalogUploadView.vue";
 import LibraryView from "@/views/LibraryView.vue";
 import ConceptsView from "@/views/ConceptsView.vue";
 import IndicatorQAView from "@/views/IndicatorQAView.vue";
+import DataAssetsView from "@/views/DataAssetsView.vue";
 import type {
   ConceptMatchHit,
   DocumentTaskProfile,
@@ -455,8 +457,10 @@ async function ensureWorkflowTaskId(): Promise<number> {
 async function generateTicket(): Promise<void> {
   if (!taskWorkflow.value) return;
   await withBusy(async () => {
-    await apiClient.generateTicket(taskWorkflow.value!.task.id);
-    taskWorkflow.value = await apiClient.getTaskWorkflow(taskWorkflow.value!.task.id);
+    const taskId = await ensureWorkflowTaskId();
+    await apiClient.generateTicket(taskId);
+    taskWorkflow.value = await apiClient.getTaskWorkflow(taskId);
+    activePage.value = "ticket";
   });
 }
 

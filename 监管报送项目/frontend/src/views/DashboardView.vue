@@ -9,22 +9,22 @@
       <div class="dash-stat hot">
         <div class="lbl">待处理发文</div>
         <div class="val">{{ pendingCount }}</div>
-        <div class="delta">较昨日 +1 · 1 项高影响</div>
+        <div class="delta">共 {{ stats?.active_tasks ?? "…" }} 个活跃任务</div>
       </div>
       <div class="dash-stat">
-        <div class="lbl">影响分析中</div>
-        <div class="val">{{ analyzingCount }}</div>
-        <div class="delta">G24 / G21 / G25 共 5 项</div>
+        <div class="lbl">待复核影响项</div>
+        <div class="val">{{ stats?.pending_review ?? analyzingCount }}</div>
+        <div class="delta">影响分析待确认</div>
       </div>
       <div class="dash-stat">
-        <div class="lbl">待复核工单</div>
-        <div class="val">{{ ticketCount }}</div>
-        <div class="delta">业务 4 / 开发 5 / 治理 3</div>
+        <div class="lbl">待处理工单</div>
+        <div class="val">{{ stats?.pending_tickets ?? ticketCount }}</div>
+        <div class="delta">草稿状态未关闭</div>
       </div>
       <div class="dash-stat">
-        <div class="lbl">本月已归档</div>
-        <div class="val">18</div>
-        <div class="delta">22 条经验沉淀</div>
+        <div class="lbl">已沉淀血缘</div>
+        <div class="val">{{ stats?.confirmed_lineage ?? "…" }}</div>
+        <div class="delta">共 {{ stats?.total_lineage ?? "…" }} 条 · 本月归档工单 {{ stats?.confirmed_tickets_month ?? "…" }}</div>
       </div>
     </div>
 
@@ -111,9 +111,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted, ref } from "vue";
 import type { PageId } from "@/components/AppShell.vue";
-import type { RegDocument, RegTask, TaskStatus, RiskLevel } from "@/types/api";
+import type { DashboardStats, RegDocument, RegTask, TaskStatus, RiskLevel } from "@/types/api";
+import { apiClient } from "@/api/client";
 
 const props = defineProps<{
   tasks: RegTask[];
@@ -121,6 +122,16 @@ const props = defineProps<{
 }>();
 
 defineEmits<{ navigate: [page: PageId] }>();
+
+const stats = ref<DashboardStats | null>(null);
+
+onMounted(async () => {
+  try {
+    stats.value = await apiClient.getDashboardStats();
+  } catch {
+    // 保持 null，UI 降级显示任务列表计算值
+  }
+});
 
 const displayTasks = computed(() => props.tasks.slice(0, 5));
 const pendingCount = computed(() => props.tasks.filter((t) => t.status === "CREATED").length || props.tasks.length);

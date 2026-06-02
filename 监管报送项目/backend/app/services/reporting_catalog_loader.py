@@ -67,6 +67,7 @@ def load_catalog_from_db(session: Session) -> ReportingSeedCatalog:
         .join(RegReportingItem, RegReportingItem.id == ReportingItemLineage.reporting_item_id)
         .join(DataFieldCatalog, DataFieldCatalog.id == ReportingItemLineage.data_field_id)
         .join(DataSystemCatalog, DataSystemCatalog.id == DataFieldCatalog.data_system_id)
+        .where(ReportingItemLineage.mapping_status != "RETIRED")
     ).all()
     lineage = [
         {

@@ -921,6 +921,7 @@ def _load_impact_items(task_id: int, session: Session) -> list[ReportingImpactIt
             recommended_action=row.recommended_action,
             confidence_level=row.confidence_level,
             risk_level=row.risk_level,
+            llm_analyzed=bool(row.llm_analyzed),
         )
         for row in rows
     ]
@@ -1105,6 +1106,7 @@ def _replace_reporting_impacts(
                 recommended_action=impact.recommended_action,
                 confidence_level=impact.confidence_level,
                 risk_level=impact.risk_level,
+                llm_analyzed=getattr(impact, "llm_analyzed", False),
             )
         )
 
@@ -1127,6 +1129,7 @@ def _impact_read_from_draft(impact: ReportingImpactDraft) -> ReportingImpactItem
         confidence_level=impact.confidence_level,
         risk_level=impact.risk_level,
         change_axis=impact.change_axis,
+        llm_analyzed=getattr(impact, "llm_analyzed", False),
     )
 
 
@@ -1148,6 +1151,7 @@ def _impact_draft_from_read(impact: ReportingImpactItemRead) -> ReportingImpactD
         confidence_level=impact.confidence_level,
         risk_level=impact.risk_level,
         change_axis=impact.change_axis,
+        llm_analyzed=getattr(impact, "llm_analyzed", False),
     )
 
 

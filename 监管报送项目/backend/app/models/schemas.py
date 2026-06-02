@@ -98,6 +98,7 @@ class ReportingImpactItemRead(BaseModel):
     confidence_level: str = "MEDIUM"
     risk_level: RiskLevel
     change_axis: str = "UNCLEAR"  # ROW / COLUMN / CELL / UNCLEAR
+    llm_analyzed: bool = False    # True = 经过真实 LLM 分析；False = mock/模板
 
 
 class ImpactAnalysisResponse(BaseModel):

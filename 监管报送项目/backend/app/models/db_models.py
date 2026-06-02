@@ -339,6 +339,7 @@ class RegReportingImpactItem(SQLModel, table=True):
     sub_ticket_triggers: str = Field(default="{}", sa_column=Column(Text))
     confidence_level: str = "MEDIUM"
     risk_level: RiskLevel = RiskLevel.MEDIUM
+    llm_analyzed: bool = Field(default=False)  # True = 经 LLM 分析；False = mock/模板
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

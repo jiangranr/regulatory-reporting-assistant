@@ -1,6 +1,43 @@
 export type DocumentStatus = "UPLOADED" | "PARSED" | "FAILED";
 export type TaskStatus = "CREATED" | "RULE_EXTRACTED" | "IMPACT_ANALYZED" | "TICKET_GENERATED";
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
+
+export interface DashboardStats {
+  confirmed_lineage: number;
+  total_lineage: number;
+  pending_tickets: number;
+  confirmed_tickets_month: number;
+  active_tasks: number;
+  pending_review: number;
+}
+
+export interface SourceFieldDependency {
+  reporting_item_code: string;
+  reporting_item_name: string;
+  reporting_object_code: string;
+  lineage_role: string;
+  mapping_status: string;
+  confidence_level: string;
+}
+
+export interface SourceFieldDependencies {
+  field_code: string;
+  field_name: string;
+  owner_team: string;
+  system_code: string;
+  system_name: string;
+  regulatory_dependencies: SourceFieldDependency[];
+  dependency_count: number;
+}
+
+export interface SourceField {
+  field_code: string;
+  field_name: string;
+  system_code: string;
+  system_name: string;
+  owner_team: string;
+  regulatory_dependency_count: number;
+}
 export type WorkflowStepStatus = "PENDING" | "RUNNING" | "DONE" | "REVIEW_REQUIRED" | "FAILED";
 
 export interface RegDocument {
@@ -63,6 +100,8 @@ export interface ImpactItem {
   risk_level: RiskLevel;
   /** ROW = 行指标新增/删除；COLUMN = 列度量变更；CELL = 单 cell 口径；UNCLEAR = 未知 */
   change_axis?: string;
+  /** true = 经过真实 LLM 分析；false = mock/关键词路由 */
+  llm_analyzed?: boolean;
 }
 
 export interface TicketDraft {
